@@ -51,7 +51,9 @@ enum EditVal {
 enum ControlVar {
   ENV,
   BEAN
-} controlVar;
+};
+
+ControlVar controlVarMan, controlVarAuto;
 
 // EEPROM (Flash memory) Addresses
 #define ADDR_KP_E 0  
@@ -60,8 +62,10 @@ enum ControlVar {
 #define ADDR_KP_B 6
 #define ADDR_KI_B 8
 #define ADDR_KD_B 10
-#define ADDR_SEG_TIME 12 // Address 12 - 29 (9 segments x 2 bytes)
-#define ADDR_SEG_TEMP 30 // Addresses 30 - 47
+#define ADDR_CVAR_MAN 12
+#define ADDR_CVAR_AUTO 14
+#define ADDR_SEG_TIME 16 // Address 16 - 33 (9 segments x 2 bytes)
+#define ADDR_SEG_TEMP 34 // Addresses 34 - 51
 
 
 // Control gains are represented as integers ranging from 0 - 999, with LSBs below
@@ -175,9 +179,9 @@ void setup() {
   EEPROM.read(ADDR_KP_B, &Kp);
   EEPROM.read(ADDR_KI_B, &Ki);
   EEPROM.read(ADDR_KD_B, &Kd);
-  if (Kp < 0 || Kp > 999) Kp = 0;
-  if (Ki < 0 || Ki > 999) Ki = 0;
-  if (Kd < 0 || Kd > 999) Kd = 0;
+  if (Kp > 999) Kp = 0;
+  if (Ki > 999) Ki = 0;
+  if (Kd > 999) Kd = 0;
   beanController.setPidGains(Kp, Ki, Kd);
 
   // Load segment times and temperatures
@@ -190,13 +194,21 @@ void setup() {
   currentSeg = 1;
   currentSegTime = segTime[0];
   currentSetTemp = segTemp[0];
+
+  // Load default control variable
+  uint16_t cv;
+  EEPROM.read(ADDR_CVAR_MAN, &cv);
+  if (cv == 0) controlVarMan = ENV;
+  else controlVarMan = BEAN;
+  EEPROM.read(ADDR_CVAR_AUTO, &cv);
+  if (cv == 0) controlVarAuto = ENV;
+  else controlVarAuto = BEAN;
   
   envTempSens.begin();
   //envTempSens.setThermocoupleType(MAX31856_TCTYPE_K); // Already default in .begin();
 
   mode = AUTO;
   editVal = TEMP;
-  controlVar = ENV;
   
   lcd.clear();
   secTimer = millis();
@@ -250,37 +262,27 @@ void loop() {
   modeButton.update();
   if (modeButton.fell()) {  // Switch Modes
     if (!roast) { // Only switch modes if not roasting
-      if (mode == AUTO){
-        mode = MANUAL;
-        editVal = TEMP;
-      }
-      else if (mode == MANUAL){
-        mode = SETTINGS;
-        editVal = SEG;
-      }
-      else if (mode == SETTINGS){
-        mode = PIDTUNE_E;
-        editVal = KP;
-      }
-      else if (mode == PIDTUNE_E){
-        mode = PIDTUNE_B;
-        if (savedata) {
-          EEPROM.write(ADDR_KP_E, envController.Kp);
-          EEPROM.write(ADDR_KI_E, envController.Ki);
-          EEPROM.write(ADDR_KD_E, envController.Kd);
-          // Add a screen to display that data was saved
-        }
-      }
-      else if (mode == PIDTUNE_B){
+      saveSettings(); // Save settings to EEPROM when switching modes
+      switch (mode) {
+        case AUTO:
+          mode = MANUAL;
+          editVal = TEMP;
+          break;
+        case MANUAL:
+          mode = SETTINGS;
+          editVal = SEG;
+          break;
+        case SETTINGS:
+          mode = PIDTUNE_E;
+          editVal = KP;
+          break;
+        case PIDTUNE_E:
+          mode = PIDTUNE_B;
+          break;
+        case PIDTUNE_B:
         mode = AUTO;
-        if (savedata) {
-          EEPROM.write(ADDR_KP_B, beanController.Kp);
-          EEPROM.write(ADDR_KI_B, beanController.Ki);
-          EEPROM.write(ADDR_KD_B, beanController.Kd);
-          // Add a screen to display that data was saved
-        }
+        break;
       }
-      savedata = false;
     }
     lcd.clear();
     updateDisplay();
@@ -288,24 +290,26 @@ void loop() {
 
   selButton.update();
   if (selButton.fell()) {  // Make new selection (MANUAL and SETTINGS modes)
-    if (mode == MANUAL) {
-      if (editVal == TEMP)  editVal = FAN;
-      else if (editVal == FAN) editVal = CVAR;
-      else editVal = TEMP;
-    }
-    else if (mode == SETTINGS) {
-      if (editVal == SEG) editVal = TIME;
-      else if (editVal == TIME) editVal = TEMP;
-      else if (editVal == TEMP) editVal = FAN;
-      else if (editVal == FAN) editVal = CVAR;
-      else editVal = SEG;
-    }
-    else if ((mode == PIDTUNE_E) || (mode == PIDTUNE_B)) {
-      if (editVal == KP) editVal = KI;
-      else if (editVal == KI) editVal = KD;
-      else if (editVal == KD) editVal = TEMP;  
-      else if (editVal == TEMP) editVal = FAN;  
-      else if (editVal == FAN) editVal = KP;      
+    switch (mode) {
+      case MANUAL:
+        if (editVal == TEMP)  editVal = FAN;
+        else if (editVal == FAN) editVal = CVAR;
+        else editVal = TEMP;
+        break;
+      case SETTINGS:
+        if (editVal == SEG) editVal = TIME;
+        else if (editVal == TIME) editVal = TEMP;
+        else if (editVal == TEMP) editVal = FAN;
+        else if (editVal == FAN) editVal = CVAR;
+        else editVal = SEG;
+        break;
+      case PIDTUNE_E:
+      case PIDTUNE_B:
+        if (editVal == KP) editVal = KI;
+        else if (editVal == KI) editVal = KD;
+        else if (editVal == KD) editVal = TEMP;  
+        else if (editVal == TEMP) editVal = FAN;  
+        else if (editVal == FAN) editVal = KP;      
     }
     updateDisplay();
   }
@@ -313,9 +317,18 @@ void loop() {
   incButton.update();
   if (incButton.fell()) { // Button was pushed
       if (editVal == CVAR) {
-        controlVar = (controlVar == ENV ? BEAN : ENV);
+        if (mode == SETTINGS) controlVarAuto = (controlVarAuto == ENV ? BEAN : ENV);
+        else controlVarMan = (controlVarMan == ENV ? BEAN : ENV);
         envController.reset();
         beanController.reset();
+        savedata = true;
+        updateDisplay();
+      }
+      else if (editVal == SEG) {
+        currentSeg++;
+        if (currentSeg > 9) currentSeg = 9;
+        currentSegTime = segTime[currentSeg-1];
+        currentSetTemp = segTemp[currentSeg-1];
         updateDisplay();
       }
       else {
@@ -323,7 +336,7 @@ void loop() {
         incButtonPressTimeStamp1 = millis();
         incButtonPressTimeStamp2 = incButtonPressTimeStamp1;       
       }
-    }
+  }
   else if (incButton.read() == HIGH) { // Button has been released
       incState = false;
   }
@@ -343,9 +356,18 @@ void loop() {
   decButton.update();
   if (decButton.fell()) { // Button was pushed
       if (editVal == CVAR) {
-        controlVar = (controlVar == ENV ? BEAN : ENV);
+        if (mode == SETTINGS) controlVarAuto = (controlVarAuto == ENV ? BEAN : ENV);
+        else controlVarMan = (controlVarMan == ENV ? BEAN : ENV);
         envController.reset();
         beanController.reset();
+        savedata = true;
+        updateDisplay();
+      }
+      else if (editVal == SEG) {
+        currentSeg--;
+        if (currentSeg < 1) currentSeg = 1;
+        currentSegTime = segTime[currentSeg-1];
+        currentSetTemp = segTemp[currentSeg-1];
         updateDisplay();
       }
       else {
@@ -353,7 +375,7 @@ void loop() {
         decButtonPressTimeStamp1 = millis();
         decButtonPressTimeStamp2 = decButtonPressTimeStamp1;       
       }
-    }
+  }
   else if (decButton.read() == HIGH) { // Button has been released
       decState = false;
   }
@@ -414,7 +436,7 @@ void loop() {
     // Calculate feedback control
     heat = 0;  // Heat off by default
     if (roast) {
-      if ((mode == PIDTUNE_E) || ((mode != PIDTUNE_B) && (controlVar == ENV))) { // Env temp control
+      if ((mode == PIDTUNE_E) || ((mode == MANUAL) && (controlVarMan == ENV)) || ((mode == AUTO) && (controlVarAuto == ENV))) { // Env temp control
         if (envTempErrCtr < ERR_CTR_TIMEOUT) {
           heat = envController.calcControl(envTempAve);
         }
@@ -441,13 +463,50 @@ void loop() {
   
 }
 
+/*
+ * Save data to SD Card
+ */
+void saveSettings() {
+  uint16_t cv;
+  if(savedata) { // One of the defaults has changed
+    switch (mode) {
+      case MANUAL:
+        if (controlVarMan == ENV)  cv = 0;
+        else cv = 1;
+        EEPROM.write(ADDR_CVAR_MAN, cv);
+        break;
+      case SETTINGS:
+        if (controlVarAuto == ENV)  cv = 0;
+        else cv = 1;
+        EEPROM.write(ADDR_CVAR_AUTO, cv);
+        break;
+      case PIDTUNE_E:
+        EEPROM.write(ADDR_KP_E, envController.Kp);
+        EEPROM.write(ADDR_KI_E, envController.Ki);
+        EEPROM.write(ADDR_KD_E, envController.Kd);
+        break;
+      case PIDTUNE_B:
+        EEPROM.write(ADDR_KP_B, beanController.Kp);
+        EEPROM.write(ADDR_KI_B, beanController.Ki);
+        EEPROM.write(ADDR_KD_B, beanController.Kd);
+        break;
+    }
+    lcd.clear();
+    lcd.setCursor(1,1);
+    lcd.print("Saving Settings...");
+    delay(1000);
+  }
+  savedata = false;
+}
+
+/*
+ * Check to see if heater needs to be turned off
+ */
 void heaterDutyCycleOff() {
   int dc = (int)(10*heat);
   if (heat >= 100.0) return;  // Will leave heater on no matter what
   if ((millis() - secTimer + 100 > dc) && (heaterState == HIGH)) { // Check if we need to turn off heater within the next 100 ms
     while (millis() - secTimer < dc); // Just wait until the right time
-    Serial.print("Turn off timing: ");
-    Serial.println(millis() - secTimer - (int)(10*heat));
     heaterState = LOW;
     digitalWrite(HEATER, LOW);
   }
@@ -583,14 +642,14 @@ void updateDisplay() {
       lcd.setCursor(15,0);
       formattedTime(timeStr,(int)elapsedTime); 
       lcd.print(timeStr); 
-      if ((mode != PIDTUNE_E) && (mode != PIDTUNE_B)) {
+      if ((mode == MANUAL) || (mode == AUTO)) {
         lcd.setCursor(15,1);
         printTemp(currentSetTemp,0);
         lcd.setCursor(11,2);
-        if (controlVar == ENV) lcd.print("*");
+        if (((mode == MANUAL) && (controlVarMan == ENV)) || ((mode == AUTO) && (controlVarAuto == ENV))) lcd.print("*");
         else lcd.print(" ");
         lcd.setCursor(11,3);
-        if (controlVar == ENV) lcd.print(" ");
+        if (((mode == MANUAL) && (controlVarMan == ENV)) || ((mode == AUTO) && (controlVarAuto == ENV))) lcd.print(" ");
         else lcd.print("*");        
       }
       lcd.setCursor(5,2);
@@ -790,11 +849,6 @@ void incDecSelection(int incDec) {
   uint16_t Kp, Ki, Kd;
   
   switch (editVal) {
-    case SEG:
-      currentSeg = currentSeg + (incDec > 1 ? 1 : -1);
-      if (currentSeg > 9) currentSeg = 9;
-      else if (currentSeg < 1) currentSeg = 1;
-      break;
     case TIME:
       // add later
       break;
