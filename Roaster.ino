@@ -66,7 +66,7 @@ ControlVar controlVarMan, controlVarAuto;
 #define ADDR_CVAR_AUTO 14
 #define ADDR_SEG_TIME 16 // Address 16 - 33 (9 segments x 2 bytes)
 #define ADDR_SEG_TEMP 34 // Addresses 34 - 51
-
+#define ADDR_SEG_FAN  52 // Addresses 52 - 69
 
 // Control gains are represented as integers ranging from 0 - 999, with LSBs below
 #define KP_LSB 0.02  // LSB = 0.02% per deg, 20% per deg full range
@@ -88,9 +88,9 @@ PidController envController, beanController;
 
 int numSeg = 9;
 int currentSeg = 1;
-int currentSegTime, currentSetTemp;
+int currentSegTime, currentSetTemp, saveSetTemp;
 
-uint16_t segTime[9], segTemp[9];
+uint16_t segTime[9], segTemp[9], segFan[9];
 
 double envTemp =  0; // Current temperature measurements
 double beanTemp = 0;
@@ -186,14 +186,17 @@ void setup() {
 
   // Load segment times and temperatures
   for (int i = 0; i < 9; i++) {
-    EEPROM.read(ADDR_SEG_TIME, &segTime[i]);
-    EEPROM.read(ADDR_SEG_TEMP, &segTemp[i]);
-    if (segTime[i] < 0 || segTime[i] > 6000) segTime[i] = 30;
-    if (segTemp[i] < 0 || segTemp[i] > 500)  segTemp[i] = 100;
+    EEPROM.read(ADDR_SEG_TIME + 2*i, &segTime[i]);
+    EEPROM.read(ADDR_SEG_TEMP + 2*i, &segTemp[i]);
+    EEPROM.read(ADDR_SEG_FAN  + 2*i, &segFan[i]);
+    if (segTime[i] > 900) segTime[i] = 30;
+    if (segTemp[i] > 500) segTemp[i] = 100;
+    if (segFan[i] > 100) segFan[i] = 100;
   }
   currentSeg = 1;
   currentSegTime = segTime[0];
   currentSetTemp = segTemp[0];
+  saveSetTemp = currentSetTemp;
 
   // Load default control variable
   uint16_t cv;
@@ -271,17 +274,23 @@ void loop() {
         case MANUAL:
           mode = SETTINGS;
           editVal = SEG;
+          saveSetTemp = currentSetTemp;
+          currentSeg = 1;
+          currentSegTime = segTime[0];
+          currentSetTemp = segTemp[0];
           break;
         case SETTINGS:
           mode = PIDTUNE_E;
           editVal = KP;
+          currentSetTemp = saveSetTemp;
           break;
         case PIDTUNE_E:
           mode = PIDTUNE_B;
           break;
         case PIDTUNE_B:
-        mode = AUTO;
-        break;
+          mode = AUTO;
+          editVal = FAN;
+          break;
       }
     }
     lcd.clear();
@@ -479,6 +488,10 @@ void saveSettings() {
         if (controlVarAuto == ENV)  cv = 0;
         else cv = 1;
         EEPROM.write(ADDR_CVAR_AUTO, cv);
+          for (int i = 0; i < 9; i++) {
+            EEPROM.write(ADDR_SEG_TIME + 2*i, segTime[i]);
+            EEPROM.write(ADDR_SEG_TEMP + 2*i, segTemp[i]);
+          }
         break;
       case PIDTUNE_E:
         EEPROM.write(ADDR_KP_E, envController.Kp);
@@ -638,36 +651,35 @@ void updateDisplay() {
       showSelectionPID();
    }
 
-   if (mode != SETTINGS) {  // Common to all except SETTINGS
+   if ((mode == MANUAL) || (mode == AUTO) || (mode == SETTINGS)) {
+      lcd.setCursor(12,1); 
+      lcd.print("ST");
+      lcd.setCursor(15,1);
+      printTemp(currentSetTemp,0);
+      
+      lcd.setCursor(11,2);
+      if (((mode == MANUAL) && (controlVarMan == ENV)) || ((mode != MANUAL) && (controlVarAuto == ENV))) lcd.print("*");
+      else lcd.print(" ");
+      lcd.setCursor(11,3);
+      if (((mode == MANUAL) && (controlVarMan == ENV)) || ((mode != MANUAL) && (controlVarAuto == ENV))) lcd.print(" ");
+      else lcd.print("*");        
+   }     
+
+   if (mode != SETTINGS) {
       lcd.setCursor(15,0);
       formattedTime(timeStr,(int)elapsedTime); 
       lcd.print(timeStr); 
-      if ((mode == MANUAL) || (mode == AUTO)) {
-        lcd.setCursor(15,1);
-        printTemp(currentSetTemp,0);
-        lcd.setCursor(11,2);
-        if (((mode == MANUAL) && (controlVarMan == ENV)) || ((mode == AUTO) && (controlVarAuto == ENV))) lcd.print("*");
-        else lcd.print(" ");
-        lcd.setCursor(11,3);
-        if (((mode == MANUAL) && (controlVarMan == ENV)) || ((mode == AUTO) && (controlVarAuto == ENV))) lcd.print(" ");
-        else lcd.print("*");        
-      }
+   
+      lcd.setCursor(0,2);
+      lcd.print("HEAT");
       lcd.setCursor(5,2);
       printPercent((int)heat);
-      lcd.setCursor(5,3);
-      printPercent((int)fan);      
    }
-
-   // Common display for all modes
-   if ((mode != PIDTUNE_E) && (mode != PIDTUNE_B)) {
-     lcd.setCursor(12,1); 
-     lcd.print("ST");
-   }
-   lcd.setCursor(0,2);
-   lcd.print("HEAT");
 
    lcd.setCursor(0,3);
    lcd.print("FAN");
+   lcd.setCursor(5,3);
+   printPercent((int)fan); // Need to modify for SETTINGS
  
    lcd.setCursor(12,2);
    lcd.print("ET");
@@ -850,7 +862,10 @@ void incDecSelection(int incDec) {
   
   switch (editVal) {
     case TIME:
-      // add later
+      currentSegTime = currentSegTime + (incDec > 0 ? 5 : -5);
+      if (currentSegTime < 0) currentSegTime = 0;
+      if (currentSegTime > 900) currentSegTime = 900;
+      segTime[currentSeg-1] = currentSegTime;
       break;
     case TEMP:
       int tempIncSize;
@@ -860,6 +875,7 @@ void incDecSelection(int incDec) {
       currentSetTemp = currentSetTemp + (incDec > 0 ? tempIncSize : -tempIncSize);
       if (currentSetTemp > 500) currentSetTemp = 500;
       else if (currentSetTemp < 20) currentSetTemp = 20;
+      if (mode == SETTINGS) segTemp[currentSeg-1] = currentSetTemp;
       break;
     case FAN:
       fan = fan + (incDec > 0 ? 5 : -5);
