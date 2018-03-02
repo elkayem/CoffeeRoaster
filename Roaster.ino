@@ -68,6 +68,14 @@ ControlVar controlVarMan, controlVarAuto;
 #define ADDR_SEG_TEMP 34 // Addresses 34 - 51
 #define ADDR_SEG_FAN  52 // Addresses 52 - 69
 
+// Default gains.  These work well with a popcorn popper
+#define KP_E_DEFAULT 0
+#define KI_E_DEFAULT 0
+#define KD_E_DEFAULT 0
+#define KP_B_DEFAULT 0
+#define KI_B_DEFAULT 0
+#define KD_B_DEFAULT 0 
+
 // Control gains are represented as integers ranging from 0 - 999, with LSBs below
 #define KP_LSB 0.02  // LSB = 0.02% per deg, 20% per deg full range
 #define KI_LSB 0.005  // LSB = 0.005% per deg-sec, 5% per deg-sec full range
@@ -90,7 +98,7 @@ int numSeg = 9;
 int currentSeg = 1;
 int currentSegTime, currentSetTemp, saveSetTemp;
 
-uint16_t segTime[9], segTemp[9], segFan[9];
+uint16_t segTime[9], segTemp[9], segFan[9], setTemp0;
 
 double envTemp =  0; // Current temperature measurements
 double beanTemp = 0;
@@ -171,17 +179,17 @@ void setup() {
   EEPROM.read(ADDR_KP_E, &Kp);  
   EEPROM.read(ADDR_KI_E, &Ki);
   EEPROM.read(ADDR_KD_E, &Kd);
-  if (Kp < 0 || Kp > 999) Kp = 0;
-  if (Ki < 0 || Ki > 999) Ki = 0;
-  if (Kd < 0 || Kd > 999) Kd = 0;
+  if (Kp > 999) Kp = KP_E_DEFAULT;
+  if (Ki > 999) Ki = KI_E_DEFAULT;
+  if (Kd > 999) Kd = KD_E_DEFAULT;
   envController.setPidGains(Kp, Ki, Kd);
   
   EEPROM.read(ADDR_KP_B, &Kp);
   EEPROM.read(ADDR_KI_B, &Ki);
   EEPROM.read(ADDR_KD_B, &Kd);
-  if (Kp > 999) Kp = 0;
-  if (Ki > 999) Ki = 0;
-  if (Kd > 999) Kd = 0;
+  if (Kp > 999) Kp = KP_B_DEFAULT;
+  if (Ki > 999) Ki = KI_B_DEFAULT;
+  if (Kd > 999) Kd = KD_B_DEFAULT;
   beanController.setPidGains(Kp, Ki, Kd);
 
   // Load segment times and temperatures
@@ -218,7 +226,7 @@ void setup() {
   updateDisplay();
 }
 
-unsigned long int elapsedTimeStart = 0;
+unsigned long int elapsedTimeStart = 0, segTimeStart;
 float elapsedTime = 0.0;
 
 bool roast = false;
@@ -232,8 +240,7 @@ void loop() {
   static unsigned long incButtonPressTimeStamp1, decButtonPressTimeStamp1;
   static unsigned long incButtonPressTimeStamp2, decButtonPressTimeStamp2;
   int rate;
-  //static double intErr = 0, errPrev = 0;
-
+  
   /*
    * Button Logic
    */
@@ -254,6 +261,14 @@ void loop() {
       }
       logfile.println("Time, Control Temp, Env Temp, Bean Temp, Heat, Fan");
       logfile.flush();
+      if (mode == AUTO) {
+        currentSetTemp = segTemp[0];
+        currentSegTime = segTime[0];
+        fan = (double)segFan[0];
+        setTemp0 = segTemp[0];
+        currentSeg = 1;
+        segTimeStart = elapsedTimeStart; 
+      }
     }
     else {
       envController.reset();
@@ -445,6 +460,30 @@ void loop() {
     // Calculate feedback control
     heat = 0;  // Heat off by default
     if (roast) {
+      if (mode == AUTO) {
+        currentSegTime = (int)segTime[currentSeg-1] - (int)(millis() - segTimeStart)/1000;
+        if (currentSegTime < 1) {
+          setTemp0 = segTemp[currentSeg-1];
+          currentSeg++;
+          
+          bool endRoast = false;
+          if (currentSeg > 9) endRoast = true;
+          else if (segTime[currentSeg-1] == 0) endRoast = true;
+          if (endRoast == true) {
+            roast = false;
+            currentSeg = 0;
+            heat = 0;
+            envController.reset();
+            beanController.reset();
+            logfile.close();
+            return;
+          }
+          currentSegTime = segTime[currentSeg-1];
+          fan = segFan[currentSeg-1];
+          segTimeStart = millis(); 
+        }
+        currentSetTemp = (int)((double)setTemp0 + ((double)segTemp[currentSeg-1] - (double)setTemp0) * (double)(millis() - segTimeStart)/double(1000*segTime[currentSeg-1]));
+      }
       if ((mode == PIDTUNE_E) || ((mode == MANUAL) && (controlVarMan == ENV)) || ((mode == AUTO) && (controlVarAuto == ENV))) { // Env temp control
         if (envTempErrCtr < ERR_CTR_TIMEOUT) {
           heat = envController.calcControl(envTempAve);
@@ -473,7 +512,7 @@ void loop() {
 }
 
 /*
- * Save data to SD Card
+ * Save settings to EEPROM (flash memory)
  */
 void saveSettings() {
   uint16_t cv;
@@ -491,6 +530,7 @@ void saveSettings() {
           for (int i = 0; i < 9; i++) {
             EEPROM.write(ADDR_SEG_TIME + 2*i, segTime[i]);
             EEPROM.write(ADDR_SEG_TEMP + 2*i, segTemp[i]);
+            EEPROM.write(ADDR_SEG_FAN  + 2*i, segFan[i]);
           }
         break;
       case PIDTUNE_E:
@@ -548,12 +588,6 @@ void readTempSensors() {
 
   if (envTempErrCtr >= ERR_CTR_TIMEOUT) envTemp = NAN;
   if (beanTempErrCtr >= ERR_CTR_TIMEOUT) beanTemp = NAN;
-   
-  Serial.print(envTemp);  Serial.print(" ");
-  Serial.print(beanTemp);  Serial.print(" ");
-  Serial.print(envTempErrCtr);  Serial.print(" ");
-  Serial.print(beanTempErrCtr);
-  
 }
  
 /*
@@ -679,7 +713,8 @@ void updateDisplay() {
    lcd.setCursor(0,3);
    lcd.print("FAN");
    lcd.setCursor(5,3);
-   printPercent((int)fan); // Need to modify for SETTINGS
+   if (mode == SETTINGS) printPercent(segFan[currentSeg-1]);
+   else printPercent((int)fan); 
  
    lcd.setCursor(12,2);
    lcd.print("ET");
@@ -878,14 +913,21 @@ void incDecSelection(int incDec) {
       if (mode == SETTINGS) segTemp[currentSeg-1] = currentSetTemp;
       break;
     case FAN:
-      fan = fan + (incDec > 0 ? 5 : -5);
-      if (fan > 100) fan = 100;
-      else if (fan < 0) fan = 0;
-
-      if ((heat > 0) && (fan < MIN_FAN_SPEED)) {
-        fan = MIN_FAN_SPEED;
+      if (mode == SETTINGS) {
+        if (segFan[currentSeg-1] == 0 && incDec < 0) break;
+        segFan[currentSeg-1] += (incDec > 0 ? 5 : -5);
+        if (segFan[currentSeg-1] > 100) segFan[currentSeg-1] = 100;
       }
-      setFanSpeed();
+      else {
+        fan += (incDec > 0 ? 5 : -5);
+        if (fan > 100) fan = 100;
+        else if (fan < 0) fan = 0;
+
+        if ((heat > 0) && (fan < MIN_FAN_SPEED)) {
+          fan = MIN_FAN_SPEED;
+        }
+        setFanSpeed();
+      }
       break;
     case KP:
       if (mode == PIDTUNE_E) Kp = envController.Kp;
@@ -937,7 +979,7 @@ double PidController::calcControl(double measTemp) {
   if (ctrlVal > 100) ctrlVal = 100;
   if (ctrlVal < 0) ctrlVal = 0;
 
-  return(ctrlVal);
+  return ctrlVal;
 }      
 
 void PidController::setPidGains(uint16_t Kp_in, uint16_t Ki_in, uint16_t Kd_in) {
