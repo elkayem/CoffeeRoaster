@@ -69,12 +69,12 @@ ControlVar controlVarMan, controlVarAuto;
 #define ADDR_SEG_FAN  52 // Addresses 52 - 69
 
 // Default gains.  These work well with a popcorn popper
-#define KP_E_DEFAULT 0
-#define KI_E_DEFAULT 0
-#define KD_E_DEFAULT 0
-#define KP_B_DEFAULT 0
-#define KI_B_DEFAULT 0
-#define KD_B_DEFAULT 0 
+#define KP_E_DEFAULT 200
+#define KI_E_DEFAULT 100
+#define KD_E_DEFAULT 50
+#define KP_B_DEFAULT 100
+#define KI_B_DEFAULT 25
+#define KD_B_DEFAULT 100 
 
 // Control gains are represented as integers ranging from 0 - 999, with LSBs below
 #define KP_LSB 0.02  // LSB = 0.02% per deg, 20% per deg full range
@@ -98,7 +98,11 @@ int numSeg = 9;
 int currentSeg = 1;
 int currentSegTime, currentSetTemp, saveSetTemp;
 
-uint16_t segTime[9], segTemp[9], segFan[9], setTemp0;
+// Default profile below.  These are overwritten by values in flash memory, but included below as a reference
+uint16_t segTime[9] = {30,  90,  120, 120, 240, 240, 120, 0, 0};
+uint16_t segTemp[9] = {120, 200, 260, 300, 360, 390, 400, 0, 0};
+uint16_t segFan[9]  = {100, 100, 100, 100, 85,  70,  70,  0, 0};
+uint16_t setTemp0;
 
 double envTemp =  0; // Current temperature measurements
 double beanTemp = 0;
@@ -219,7 +223,7 @@ void setup() {
   //envTempSens.setThermocoupleType(MAX31856_TCTYPE_K); // Already default in .begin();
 
   mode = AUTO;
-  editVal = TEMP;
+  editVal = FAN;
   
   lcd.clear();
   secTimer = millis();
@@ -471,7 +475,7 @@ void loop() {
           else if (segTime[currentSeg-1] == 0) endRoast = true;
           if (endRoast == true) {
             roast = false;
-            currentSeg = 0;
+            currentSeg = 1;
             heat = 0;
             envController.reset();
             beanController.reset();
@@ -891,8 +895,7 @@ void showSelectionPID() {
    }
 }
 
-void incDecSelection(int incDec) {
-  savedata = true; // Will write to EEPROM after changing modes
+void incDecSelection(int incDec) { 
   uint16_t Kp, Ki, Kd;
   
   switch (editVal) {
@@ -901,22 +904,27 @@ void incDecSelection(int incDec) {
       if (currentSegTime < 0) currentSegTime = 0;
       if (currentSegTime > 900) currentSegTime = 900;
       segTime[currentSeg-1] = currentSegTime;
+      savedata = true;
       break;
     case TEMP:
       int tempIncSize;
       if ((mode == PIDTUNE_E) || (mode == PIDTUNE_B))
-        tempIncSize = 5; // Use larger step sizes when tuning PID for sharper step response
-      else tempIncSize = 1;
+        tempIncSize = 10; // Use larger step sizes when tuning PID for sharper step response
+      else tempIncSize = 5;
       currentSetTemp = currentSetTemp + (incDec > 0 ? tempIncSize : -tempIncSize);
       if (currentSetTemp > 500) currentSetTemp = 500;
       else if (currentSetTemp < 20) currentSetTemp = 20;
-      if (mode == SETTINGS) segTemp[currentSeg-1] = currentSetTemp;
+      if (mode == SETTINGS) {
+        segTemp[currentSeg-1] = currentSetTemp;
+        savedata = true;
+      }
       break;
     case FAN:
       if (mode == SETTINGS) {
         if (segFan[currentSeg-1] == 0 && incDec < 0) break;
         segFan[currentSeg-1] += (incDec > 0 ? 5 : -5);
         if (segFan[currentSeg-1] > 100) segFan[currentSeg-1] = 100;
+        savedata = true;
       }
       else {
         fan += (incDec > 0 ? 5 : -5);
@@ -937,6 +945,7 @@ void incDecSelection(int incDec) {
       if (Kp > 999) Kp = 999;
       if (mode == PIDTUNE_E) envController.Kp = Kp;
       else beanController.Kp = Kp;
+      savedata = true;
       break;
     case KI:
       if (mode == PIDTUNE_E) Ki = envController.Ki;
@@ -946,6 +955,7 @@ void incDecSelection(int incDec) {
       if (Ki > 999) Ki = 999;
       if (mode == PIDTUNE_E) envController.Ki = Ki;
       else beanController.Ki = Ki;
+      savedata = true;
       break;   
     case KD:
       if (mode == PIDTUNE_E) Kd = envController.Kd;
@@ -955,8 +965,10 @@ void incDecSelection(int incDec) {
       if (Kd > 999) Kd = 999;
       if (mode == PIDTUNE_E) envController.Kd = Kd;
       else beanController.Kd = Kd;
+      savedata = true;
       break; 
   }
+  updateDisplay();
 }
 
 void setFanSpeed() {
