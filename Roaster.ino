@@ -73,7 +73,7 @@ ControlVar controlVarMan, controlVarAuto;
 #define KI_E_DEFAULT 100
 #define KD_E_DEFAULT 50
 #define KP_B_DEFAULT 100
-#define KI_B_DEFAULT 25
+#define KI_B_DEFAULT 15
 #define KD_B_DEFAULT 100 
 
 // Control gains are represented as integers ranging from 0 - 999, with LSBs below
@@ -81,6 +81,7 @@ ControlVar controlVarMan, controlVarAuto;
 #define KI_LSB 0.005  // LSB = 0.005% per deg-sec, 5% per deg-sec full range
 #define KD_LSB 0.05   // LSB = 0.05% per deg/sec, 50% per deg/sec full range
 
+#define BUFFERSIZE 6
 class PidController {
   public:
   uint16_t Kp, Ki, Kd;
@@ -89,7 +90,8 @@ class PidController {
   void reset();
   
   private:
-  double intErr = 0, errPrev = 0;  
+  double intErr = 0, errBuffer[BUFFERSIZE] = {0}; 
+  int bIndx = 0; 
 };
 
 PidController envController, beanController;
@@ -102,7 +104,6 @@ int currentSegTime, currentSetTemp, saveSetTemp;
 uint16_t segTime[9] = {30,  90,  120, 120, 240, 240, 120, 0, 0};
 uint16_t segTemp[9] = {120, 200, 260, 300, 360, 390, 400, 0, 0};
 uint16_t segFan[9]  = {100, 100, 100, 100, 85,  70,  70,  0, 0};
-uint16_t setTemp0;
 
 double envTemp =  0; // Current temperature measurements
 double beanTemp = 0;
@@ -120,7 +121,7 @@ uint8_t heaterState;
 unsigned long int secTimer = 0;
 uint16_t maxduty;
 
-char filename[] = "LOG000.CSV";
+char filename[] = "LOG0000.CSV";
 File logfile;
 
 void setup() {
@@ -236,6 +237,8 @@ float elapsedTime = 0.0;
 bool roast = false;
 bool savedata = false;
 
+int deltaFan;  // User adjust on fan speed made during auto roast
+
 /*
  * Main Loop
  */
@@ -243,6 +246,7 @@ void loop() {
   static bool incState, decState;
   static unsigned long incButtonPressTimeStamp1, decButtonPressTimeStamp1;
   static unsigned long incButtonPressTimeStamp2, decButtonPressTimeStamp2;
+  static uint16_t setTemp0, fan0;
   int rate;
   
   /*
@@ -253,10 +257,11 @@ void loop() {
     roast = !roast;
     if (roast) { // If starting new roast
         elapsedTimeStart = millis();
-        for (uint16_t i = 0; i < 999; i++) {
-          filename[3] = i / 100 + '0';
-          filename[4] = i / 10 % 10 + '0';
-          filename[5] = i % 10 + '0';
+        for (uint16_t i = 0; i < 9999; i++) {
+          filename[3] = i / 1000 + '0';
+          filename[4] = i / 100 % 10 + '0';
+          filename[5] = i / 10 % 10 + '0';
+          filename[6] = i % 10 + '0';
           if (! SD.exists(filename)) {
             // only open a new file if it doesn't exist
             logfile = SD.open(filename, FILE_WRITE);
@@ -268,7 +273,8 @@ void loop() {
       if (mode == AUTO) {
         currentSetTemp = segTemp[0];
         currentSegTime = segTime[0];
-        fan = (double)segFan[0];
+        fan0 = segFan[0];
+        deltaFan = 0;
         setTemp0 = segTemp[0];
         currentSeg = 1;
         segTimeStart = elapsedTimeStart; 
@@ -468,6 +474,7 @@ void loop() {
         currentSegTime = (int)segTime[currentSeg-1] - (int)(millis() - segTimeStart)/1000;
         if (currentSegTime < 1) {
           setTemp0 = segTemp[currentSeg-1];
+          fan0 = segFan[currentSeg-1];
           currentSeg++;
           
           bool endRoast = false;
@@ -483,10 +490,10 @@ void loop() {
             return;
           }
           currentSegTime = segTime[currentSeg-1];
-          fan = segFan[currentSeg-1];
           segTimeStart = millis(); 
         }
         currentSetTemp = (int)((double)setTemp0 + ((double)segTemp[currentSeg-1] - (double)setTemp0) * (double)(millis() - segTimeStart)/double(1000*segTime[currentSeg-1]));
+        fan = deltaFan + (int)((double)fan0 + ((double)segFan[currentSeg-1] - (double)fan0) * (double)(millis() - segTimeStart)/double(1000*segTime[currentSeg-1]));
       }
       if ((mode == PIDTUNE_E) || ((mode == MANUAL) && (controlVarMan == ENV)) || ((mode == AUTO) && (controlVarAuto == ENV))) { // Env temp control
         if (envTempErrCtr < ERR_CTR_TIMEOUT) {
@@ -900,7 +907,7 @@ void incDecSelection(int incDec) {
   
   switch (editVal) {
     case TIME:
-      currentSegTime = currentSegTime + (incDec > 0 ? 5 : -5);
+      currentSegTime = currentSegTime += 5*incDec;
       if (currentSegTime < 0) currentSegTime = 0;
       if (currentSegTime > 900) currentSegTime = 900;
       segTime[currentSeg-1] = currentSegTime;
@@ -911,7 +918,7 @@ void incDecSelection(int incDec) {
       if ((mode == PIDTUNE_E) || (mode == PIDTUNE_B))
         tempIncSize = 10; // Use larger step sizes when tuning PID for sharper step response
       else tempIncSize = 5;
-      currentSetTemp = currentSetTemp + (incDec > 0 ? tempIncSize : -tempIncSize);
+      currentSetTemp += tempIncSize*incDec;
       if (currentSetTemp > 500) currentSetTemp = 500;
       else if (currentSetTemp < 20) currentSetTemp = 20;
       if (mode == SETTINGS) {
@@ -922,12 +929,16 @@ void incDecSelection(int incDec) {
     case FAN:
       if (mode == SETTINGS) {
         if (segFan[currentSeg-1] == 0 && incDec < 0) break;
-        segFan[currentSeg-1] += (incDec > 0 ? 5 : -5);
+        segFan[currentSeg-1] += 5*incDec;
         if (segFan[currentSeg-1] > 100) segFan[currentSeg-1] = 100;
         savedata = true;
       }
       else {
-        fan += (incDec > 0 ? 5 : -5);
+        if (mode == AUTO) {
+          deltaFan += incDec;
+          fan += incDec;          
+        }
+        else fan += 5*incDec;
         if (fan > 100) fan = 100;
         else if (fan < 0) fan = 0;
 
@@ -941,7 +952,7 @@ void incDecSelection(int incDec) {
       if (mode == PIDTUNE_E) Kp = envController.Kp;
       else Kp = beanController.Kp;
       if (Kp == 0 && incDec < 0) break;
-      Kp = Kp + (incDec > 0 ? 1 : -1);
+      Kp += incDec;
       if (Kp > 999) Kp = 999;
       if (mode == PIDTUNE_E) envController.Kp = Kp;
       else beanController.Kp = Kp;
@@ -951,7 +962,7 @@ void incDecSelection(int incDec) {
       if (mode == PIDTUNE_E) Ki = envController.Ki;
       else Ki = beanController.Ki;
       if (Ki == 0 && incDec < 0) break;
-      Ki = Ki + (incDec > 0 ? 1 : -1);
+      Ki += incDec;
       if (Ki > 999) Ki = 999;
       if (mode == PIDTUNE_E) envController.Ki = Ki;
       else beanController.Ki = Ki;
@@ -961,7 +972,7 @@ void incDecSelection(int incDec) {
       if (mode == PIDTUNE_E) Kd = envController.Kd;
       else Kd = beanController.Kd;
       if (Kd == 0 && incDec < 0) break;
-      Kd = Kd + (incDec > 0 ? 1 : -1);
+      Kd+= incDec;
       if (Kd > 999) Kd = 999;
       if (mode == PIDTUNE_E) envController.Kd = Kd;
       else beanController.Kd = Kd;
@@ -978,9 +989,12 @@ void setFanSpeed() {
 // PID Controller
 double PidController::calcControl(double measTemp) {
   double err = (double)currentSetTemp - measTemp;
-  double dErr = err - errPrev;
-  errPrev = err;
+ 
   intErr += err;  // Integrated error
+
+  errBuffer[bIndx] = err;
+  bIndx = (bIndx+1)%BUFFERSIZE; // Increment circular buffer index
+  double dErr = (err - errBuffer[bIndx])/(BUFFERSIZE-1); // Rate error averaged over (BUFFERSIZE-1) frames
 
   double intErrLim = 100 / (KI_LSB*Ki);
   if (intErr > intErrLim) intErr = intErrLim;  // Don't allow integrated error to contribute more than 100% duty cycle
@@ -1002,6 +1016,6 @@ void PidController::setPidGains(uint16_t Kp_in, uint16_t Ki_in, uint16_t Kd_in) 
 
 void PidController::reset() {
    intErr = 0;
-   errPrev = 0;  
+   for (int i=0; i < BUFFERSIZE; i++) errBuffer[i] = 0;
 }
 
