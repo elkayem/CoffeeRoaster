@@ -34,7 +34,8 @@ enum Modes {
   MANUAL,
   SETTINGS,
   PIDTUNE_E,
-  PIDTUNE_B
+  PIDTUNE_B,
+  INIT
 } mode;
 
 enum EditVal {
@@ -53,7 +54,7 @@ enum ControlVar {
   BEAN
 };
 
-ControlVar controlVarMan, controlVarAuto;
+ControlVar controlVarMan = BEAN, controlVarAuto = BEAN;
 
 // EEPROM (Flash memory) Addresses
 #define ADDR_KP_E 0  
@@ -69,19 +70,19 @@ ControlVar controlVarMan, controlVarAuto;
 #define ADDR_SEG_FAN  52 // Addresses 52 - 69
 
 // Default gains.  These work well with a popcorn popper
-#define KP_E_DEFAULT 200
-#define KI_E_DEFAULT 100
-#define KD_E_DEFAULT 50
+#define KP_E_DEFAULT 100
+#define KI_E_DEFAULT 150
+#define KD_E_DEFAULT 200
 #define KP_B_DEFAULT 100
-#define KI_B_DEFAULT 15
-#define KD_B_DEFAULT 100 
+#define KI_B_DEFAULT 150
+#define KD_B_DEFAULT 200 
 
 // Control gains are represented as integers ranging from 0 - 999, with LSBs below
 #define KP_LSB 0.02  // LSB = 0.02% per deg, 20% per deg full range
-#define KI_LSB 0.005  // LSB = 0.005% per deg-sec, 5% per deg-sec full range
+#define KI_LSB 0.0005  // LSB = 0.0005% per deg-sec, 0.5% per deg-sec full range
 #define KD_LSB 0.05   // LSB = 0.05% per deg/sec, 50% per deg/sec full range
 
-#define BUFFERSIZE 6
+#define BUFFERSIZE 11  // FIR Averaging filter for derivative filter.  Difference sample 11 and 1 for 10 second rolling average
 class PidController {
   public:
   uint16_t Kp, Ki, Kd;
@@ -100,10 +101,10 @@ int numSeg = 9;
 int currentSeg = 1;
 int currentSegTime, currentSetTemp, saveSetTemp;
 
-// Default profile below.  These are overwritten by values in flash memory, but included below as a reference
-uint16_t segTime[9] = {30,  90,  120, 120, 240, 240, 120, 0, 0};
-uint16_t segTemp[9] = {120, 200, 260, 300, 360, 390, 400, 0, 0};
-uint16_t segFan[9]  = {100, 100, 100, 100, 85,  70,  70,  0, 0};
+// Default profile
+uint16_t segTime[9] = {30,  90,  120, 60,  60,  90,  90,  300, 0};
+uint16_t segTemp[9] = {120, 200, 270, 300, 325, 350, 370, 420, 0};
+uint16_t segFan[9]  = {100, 100, 90,  85,  80,  75,  70,  70,  0};
 
 double envTemp =  0; // Current temperature measurements
 double beanTemp = 0;
@@ -179,32 +180,45 @@ void setup() {
   delay(2000);
 
   EEPROM.init();
+  
   // Load control gains
   uint16_t Kp, Ki, Kd;
+  bool useDefaults = false;
   EEPROM.read(ADDR_KP_E, &Kp);  
   EEPROM.read(ADDR_KI_E, &Ki);
   EEPROM.read(ADDR_KD_E, &Kd);
-  if (Kp > 999) Kp = KP_E_DEFAULT;
-  if (Ki > 999) Ki = KI_E_DEFAULT;
-  if (Kd > 999) Kd = KD_E_DEFAULT;
+
+  // If all of the gains are zero or any are out of bounds, assume EEPROM isn't initialized
+  // and use default values
+  if (((Kp == 0) && (Ki == 0) && (Kd == 0)) || Kp > 999 || Ki > 999 || Kd > 999) {
+    useDefaults = true;
+    Kp = KP_E_DEFAULT;
+    Ki = KI_E_DEFAULT;
+    Kd = KD_E_DEFAULT;    
+  }
   envController.setPidGains(Kp, Ki, Kd);
   
   EEPROM.read(ADDR_KP_B, &Kp);
   EEPROM.read(ADDR_KI_B, &Ki);
   EEPROM.read(ADDR_KD_B, &Kd);
-  if (Kp > 999) Kp = KP_B_DEFAULT;
-  if (Ki > 999) Ki = KI_B_DEFAULT;
-  if (Kd > 999) Kd = KD_B_DEFAULT;
+  if (useDefaults || ((Kp == 0) && (Ki == 0) && (Kd == 0)) || Kp > 999 || Ki > 999 || Kd > 999) {
+    useDefaults = true;
+    Kp = KP_B_DEFAULT;
+    Ki = KI_B_DEFAULT;
+    Kd = KD_B_DEFAULT;    
+  }
   beanController.setPidGains(Kp, Ki, Kd);
 
   // Load segment times and temperatures
-  for (int i = 0; i < 9; i++) {
-    EEPROM.read(ADDR_SEG_TIME + 2*i, &segTime[i]);
-    EEPROM.read(ADDR_SEG_TEMP + 2*i, &segTemp[i]);
-    EEPROM.read(ADDR_SEG_FAN  + 2*i, &segFan[i]);
-    if (segTime[i] > 900) segTime[i] = 30;
-    if (segTemp[i] > 500) segTemp[i] = 100;
-    if (segFan[i] > 100) segFan[i] = 100;
+  if (!useDefaults) {
+    for (int i = 0; i < 9; i++) {
+      EEPROM.read(ADDR_SEG_TIME + 2*i, &segTime[i]);
+      EEPROM.read(ADDR_SEG_TEMP + 2*i, &segTemp[i]);
+      EEPROM.read(ADDR_SEG_FAN  + 2*i, &segFan[i]);
+      if (segTime[i] > 900) segTime[i] = 30;
+      if (segTemp[i] > 500) segTemp[i] = 100;
+      if (segFan[i] > 100) segFan[i] = 100;
+    }
   }
   currentSeg = 1;
   currentSegTime = segTime[0];
@@ -212,13 +226,20 @@ void setup() {
   saveSetTemp = currentSetTemp;
 
   // Load default control variable
-  uint16_t cv;
-  EEPROM.read(ADDR_CVAR_MAN, &cv);
-  if (cv == 0) controlVarMan = ENV;
-  else controlVarMan = BEAN;
-  EEPROM.read(ADDR_CVAR_AUTO, &cv);
-  if (cv == 0) controlVarAuto = ENV;
-  else controlVarAuto = BEAN;
+  if (!useDefaults) {
+    uint16_t cv;
+    EEPROM.read(ADDR_CVAR_MAN, &cv);
+    if (cv == 0) controlVarMan = ENV;
+    else controlVarMan = BEAN;
+    EEPROM.read(ADDR_CVAR_AUTO, &cv);
+    if (cv == 0) controlVarAuto = ENV;
+    else controlVarAuto = BEAN;
+  }
+
+  if (useDefaults) { // Save defaults to EEPROM
+    mode = INIT;
+    saveSettings();
+  }
   
   envTempSens.begin();
   //envTempSens.setThermocoupleType(MAX31856_TCTYPE_K); // Already default in .begin();
@@ -527,38 +548,38 @@ void loop() {
  */
 void saveSettings() {
   uint16_t cv;
-  if(savedata) { // One of the defaults has changed
-    switch (mode) {
-      case MANUAL:
-        if (controlVarMan == ENV)  cv = 0;
-        else cv = 1;
-        EEPROM.write(ADDR_CVAR_MAN, cv);
-        break;
-      case SETTINGS:
-        if (controlVarAuto == ENV)  cv = 0;
-        else cv = 1;
-        EEPROM.write(ADDR_CVAR_AUTO, cv);
-          for (int i = 0; i < 9; i++) {
-            EEPROM.write(ADDR_SEG_TIME + 2*i, segTime[i]);
-            EEPROM.write(ADDR_SEG_TEMP + 2*i, segTemp[i]);
-            EEPROM.write(ADDR_SEG_FAN  + 2*i, segFan[i]);
-          }
-        break;
-      case PIDTUNE_E:
-        EEPROM.write(ADDR_KP_E, envController.Kp);
-        EEPROM.write(ADDR_KI_E, envController.Ki);
-        EEPROM.write(ADDR_KD_E, envController.Kd);
-        break;
-      case PIDTUNE_B:
-        EEPROM.write(ADDR_KP_B, beanController.Kp);
-        EEPROM.write(ADDR_KI_B, beanController.Ki);
-        EEPROM.write(ADDR_KD_B, beanController.Kd);
-        break;
+  if(savedata || (mode == INIT)) { // Save if one of the settings has changed, or if initializing EEPROM
+    if ((mode == MANUAL) || (mode == INIT)) {
+      if (controlVarMan == ENV)  cv = 0;
+      else cv = 1;
+      EEPROM.write(ADDR_CVAR_MAN, cv);
     }
-    lcd.clear();
-    lcd.setCursor(1,1);
-    lcd.print("Saving Settings...");
-    delay(1000);
+    if ((mode == SETTINGS) || (mode == INIT)) {
+      if (controlVarAuto == ENV)  cv = 0;
+      else cv = 1;
+      EEPROM.write(ADDR_CVAR_AUTO, cv);
+      for (int i = 0; i < 9; i++) {
+         EEPROM.write(ADDR_SEG_TIME + 2*i, segTime[i]);
+         EEPROM.write(ADDR_SEG_TEMP + 2*i, segTemp[i]);
+         EEPROM.write(ADDR_SEG_FAN  + 2*i, segFan[i]);
+      }
+    }
+    if ((mode == PIDTUNE_E) || (mode == INIT)) {
+      EEPROM.write(ADDR_KP_E, envController.Kp);
+      EEPROM.write(ADDR_KI_E, envController.Ki);
+      EEPROM.write(ADDR_KD_E, envController.Kd);
+    }
+    if ((mode == PIDTUNE_B) || (mode == INIT)) {
+      EEPROM.write(ADDR_KP_B, beanController.Kp);
+      EEPROM.write(ADDR_KI_B, beanController.Ki);
+      EEPROM.write(ADDR_KD_B, beanController.Kd);
+    }
+    if (mode != INIT) {
+      lcd.clear();
+      lcd.setCursor(1,1);
+      lcd.print("Saving Settings...");
+      delay(1000);
+    }
   }
   savedata = false;
 }

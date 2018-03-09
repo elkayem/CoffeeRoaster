@@ -136,7 +136,8 @@ uint32_t Adafruit_MAX31855::spiread32(void) {
     begin();
   }
 
-
+// EDIT: digitalWriteLow(cs, LOW) moved from here to after SPI.beginTransaction.
+// This is required for compatibility with STM32 Blue Pill board.  -LKM
 
   if(sclk == -1) {
     // hardware SPI

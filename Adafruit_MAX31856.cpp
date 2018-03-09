@@ -122,7 +122,7 @@ void Adafruit_MAX31856::oneShotTemperature(void) {
 }
 
 float Adafruit_MAX31856::readCJTemperature(void) {
-  //oneShotTemperature();
+  //oneShotTemperature();  // Commented out -LKM
 
   int16_t temp16 = readRegister16(MAX31856_CJTH_REG);
   float tempfloat = temp16;
@@ -132,7 +132,7 @@ float Adafruit_MAX31856::readCJTemperature(void) {
 }
 
 float Adafruit_MAX31856::readThermocoupleTemperature(void) {
-  //oneShotTemperature();
+  //oneShotTemperature();  // Commented out -LKM
 
   int32_t temp24 = readRegister24(MAX31856_LTCBH_REG);
   if (temp24 & 0x800000) {
@@ -147,6 +147,8 @@ float Adafruit_MAX31856::readThermocoupleTemperature(void) {
   return tempfloat;
 }
 
+// EDIT: New function added to enable autoconvert.  This will be used rather than the oneShotTemperature,
+// with its unfortunate 250ms delay. See: https://forums.adafruit.com/viewtopic.php?f=19&t=108896  -LKM
 void Adafruit_MAX31856::configAutoconvert(void) {
   writeRegister8(MAX31856_CJTO_REG, 0x0);
   uint8_t t = MAX31856_CR0_AUTOCONVERT|MAX31856_CR0_FAULTCLR; //0x82
