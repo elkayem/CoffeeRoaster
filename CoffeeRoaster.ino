@@ -97,7 +97,7 @@ ControlVar controlVarMan = BEAN, controlVarAuto = BEAN;
 #define KI_LSB 0.0005  // LSB = 0.0005% per deg-sec, 0.5% per deg-sec full range
 #define KD_LSB 0.05   // LSB = 0.05% per deg/sec, 50% per deg/sec full range
 
-#define BUFFERSIZE 11  // FIR Averaging filter for derivative filter.  Difference sample 11 and 1 for 10 second rolling average
+#define BUFFERSIZE 6  // FIR Averaging filter for derivative filter.  Difference sample 6 and 1 for 5 second rolling average
 class PidController {
   public:
   uint16_t Kp, Ki, Kd;

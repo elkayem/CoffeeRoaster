@@ -1,4 +1,4 @@
-# COFFEE_ROASTER
+# COFFEE ROASTER
 
 <img src="/images/IMG_1713.JPG" alt="Roaster" width="420" height="315"> <img src="/images/IMG_1714.JPG" alt="Clock" width="420" height="315">
 
@@ -37,5 +37,5 @@ Two temperature measurements are used.  The Environment Temperature thermocouple
 
 I have also included a few 3D printed parts I used, which may be useful.  This repository includes a front panel for the LCD screen, and a mount for the Poppery II roasting chamber.   
 
-
+<img src="/images/IMG_1737.JPG" alt="Coffee Photo"> 
 
