@@ -501,7 +501,7 @@ void loop() {
     if (!isnan(beanTempMeas1) && (beanTempErrCtr == 0) ) // Two valid measurements
       beanTempAve = 0.5 * (beanTempMeas1 + beanTemp);    // Calculate average
     else
-      envTempAve = envTemp;  // Otherwise, set to last valid measurement
+      beanTempAve = beanTemp;  // Otherwise, set to last valid measurement
 
     // Calculate feedback control
     heat = 0;  // Heat off by default
