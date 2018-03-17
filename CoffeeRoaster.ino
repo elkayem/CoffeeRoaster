@@ -114,7 +114,8 @@ PidController envController, beanController;
 
 int numSeg = 9;
 int currentSeg = 1;
-int currentSegTime, currentSetTemp, saveSetTemp;
+int currentSegTime;
+double currentSetTemp, saveSetTemp;
 
 // Default profile
 uint16_t segTime[9] = {30,  90,  120, 60,  60,  90,  90,  300, 0};
@@ -237,7 +238,7 @@ void setup() {
   }
   currentSeg = 1;
   currentSegTime = segTime[0];
-  currentSetTemp = segTemp[0];
+  currentSetTemp = (double)segTemp[0];
   saveSetTemp = currentSetTemp;
 
   // Load default control variable
@@ -282,7 +283,8 @@ void loop() {
   static bool incState, decState;
   static unsigned long incButtonPressTimeStamp1, decButtonPressTimeStamp1;
   static unsigned long incButtonPressTimeStamp2, decButtonPressTimeStamp2;
-  static uint16_t setTemp0, fan0;
+  static uint16_t fan0;
+  static double setTemp0;
   int rate;
   
   /*
@@ -307,11 +309,11 @@ void loop() {
       logfile.println("Time, Control Temp, Env Temp, Bean Temp, Heat, Fan");
       logfile.flush();
       if (mode == AUTO) {
-        currentSetTemp = segTemp[0];
+        currentSetTemp = (double)segTemp[0];
         currentSegTime = segTime[0];
         fan0 = segFan[0];
         deltaFan = 0;
-        setTemp0 = segTemp[0];
+        setTemp0 = (double)segTemp[0];
         currentSeg = 1;
         segTimeStart = elapsedTimeStart; 
       }
@@ -338,7 +340,7 @@ void loop() {
           saveSetTemp = currentSetTemp;
           currentSeg = 1;
           currentSegTime = segTime[0];
-          currentSetTemp = segTemp[0];
+          currentSetTemp = (double)segTemp[0];
           break;
         case SETTINGS:
           mode = PIDTUNE_E;
@@ -398,7 +400,7 @@ void loop() {
         currentSeg++;
         if (currentSeg > 9) currentSeg = 9;
         currentSegTime = segTime[currentSeg-1];
-        currentSetTemp = segTemp[currentSeg-1];
+        currentSetTemp = (double)segTemp[currentSeg-1];
         updateDisplay();
       }
       else {
@@ -437,7 +439,7 @@ void loop() {
         currentSeg--;
         if (currentSeg < 1) currentSeg = 1;
         currentSegTime = segTime[currentSeg-1];
-        currentSetTemp = segTemp[currentSeg-1];
+        currentSetTemp = (double)segTemp[currentSeg-1];
         updateDisplay();
       }
       else {
@@ -509,7 +511,7 @@ void loop() {
       if (mode == AUTO) {
         currentSegTime = (int)segTime[currentSeg-1] - (int)(millis() - segTimeStart)/1000;
         if (currentSegTime < 1) {
-          setTemp0 = segTemp[currentSeg-1];
+          setTemp0 = (double)segTemp[currentSeg-1];
           fan0 = segFan[currentSeg-1];
           currentSeg++;
           
@@ -528,8 +530,8 @@ void loop() {
           currentSegTime = segTime[currentSeg-1];
           segTimeStart = millis(); 
         }
-        currentSetTemp = (int)((double)setTemp0 + ((double)segTemp[currentSeg-1] - (double)setTemp0) * (double)(millis() - segTimeStart)/double(1000*segTime[currentSeg-1]));
-        fan = deltaFan + (int)((double)fan0 + ((double)segFan[currentSeg-1] - (double)fan0) * (double)(millis() - segTimeStart)/double(1000*segTime[currentSeg-1]));
+        currentSetTemp = setTemp0 + ((double)segTemp[currentSeg-1] - setTemp0) * (double)(millis() - segTimeStart)/(1000*(double)segTime[currentSeg-1]);
+        fan = deltaFan + (int)((double)fan0 + ((double)segFan[currentSeg-1] - (double)fan0) * (double)(millis() - segTimeStart)/(1000*(double)segTime[currentSeg-1]));
       }
       if ((mode == PIDTUNE_E) || ((mode == MANUAL) && (controlVarMan == ENV)) || ((mode == AUTO) && (controlVarAuto == ENV))) { // Env temp control
         if (envTempErrCtr < ERR_CTR_TIMEOUT) {
@@ -726,7 +728,7 @@ void updateDisplay() {
       lcd.print(str);
       lcd.setCursor(16,1);
       lcd.print("T");
-      sprintf(str,"%03d", currentSetTemp);
+      sprintf(str,"%03d", (int)currentSetTemp);
       lcd.print(str);
       
       showSelectionPID();
@@ -766,12 +768,12 @@ void updateDisplay() {
    lcd.setCursor(12,2);
    lcd.print("ET");
    lcd.setCursor(15,2);
-   printTemp((int)envTemp,envTempErrCtr); 
+   printTemp(envTemp,envTempErrCtr); 
     
    lcd.setCursor(12,3);
    lcd.print("BT"); 
    lcd.setCursor(15,3);
-   printTemp((int)beanTemp,envTempErrCtr);  
+   printTemp(beanTemp,envTempErrCtr);  
 }
 
 void formattedTime(char *t, int seconds)
@@ -783,10 +785,10 @@ void formattedTime(char *t, int seconds)
           seconds < 10 ? ":0" : ":", seconds);  // Minutes, seconds
 }
 
-void printTemp(int temp, int errCtr) {
+void printTemp(double temp, int errCtr) {
   if (errCtr < ERR_CTR_TIMEOUT) {
     if (temp < 100)  lcd.print(" ");
-    lcd.print(temp);
+    lcd.print((int)temp);
   }
   else  lcd.print("---");
   lcd.print((char)223); // Deg symbol
@@ -950,7 +952,7 @@ void incDecSelection(int incDec) {
       savedata = true;
       break;
     case TEMP:
-      int tempIncSize;
+      double tempIncSize;
       if ((mode == PIDTUNE_E) || (mode == PIDTUNE_B))
         tempIncSize = 10; // Use larger step sizes when tuning PID for sharper step response
       else tempIncSize = 5;
@@ -958,7 +960,7 @@ void incDecSelection(int incDec) {
       if (currentSetTemp > 500) currentSetTemp = 500;
       else if (currentSetTemp < 20) currentSetTemp = 20;
       if (mode == SETTINGS) {
-        segTemp[currentSeg-1] = currentSetTemp;
+        segTemp[currentSeg-1] = (uint16_t)currentSetTemp;
         savedata = true;
       }
       break;
@@ -1024,7 +1026,7 @@ void setFanSpeed() {
 
 // PID Controller
 double PidController::calcControl(double measTemp) {
-  double err = (double)currentSetTemp - measTemp;
+  double err = currentSetTemp - measTemp;
  
   intErr += err;  // Integrated error
 
