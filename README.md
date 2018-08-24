@@ -48,5 +48,5 @@ I have also included a few 3D printed parts I used, which may be useful.  This r
 
 The plans for a 1/4" ply laser cut case are also included if you have access to a laser cutter.  Or build your own!  
 
-<img src="/images/IMG_2028.JPG" alt="Roaster" width="420"> <img src="/images/IMG_2029.JPG" alt="Roaster" width="420" height="315">
+<img src="/images/IMG_2028.JPG" alt="Roaster" width="420"> <img src="/images/IMG_2029.JPG" alt="Roaster" width="420">
 
