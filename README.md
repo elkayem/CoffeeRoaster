@@ -1,6 +1,6 @@
 # COFFEE ROASTER
 
-<img src="/images/IMG_2012.JPG" alt="Roaster" width="420"> <img src="/images/IMG_2027.JPG" alt="Roaster" width="420" height="315">
+<img src="/images/IMG_2012.JPG" alt="Roaster" width="420"> <img src="/images/IMG_2027.JPG" alt="Roaster" width="420">
 
 <img src="/images/RoastingProfile.jpg" alt="Roaster">
 
