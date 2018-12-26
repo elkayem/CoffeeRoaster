@@ -2,7 +2,7 @@
 
 <img src="/images/IMG_2012.JPG" alt="Roaster" width="420"> <img src="/images/IMG_2027.JPG" alt="Roaster" width="420">
 
-<img src="/images/RoastingProfile.jpg" alt="Roaster">
+<img src="/images/profile.png" alt="Roaster">
 
 This repository contains the code for a PID controlled coffee roaster.  The code was designed to run on the STM32F103C8 ARM development board known as the "Blue Pill", and programmed through the Arduino IDE via USB.  There are plenty of "how to" guides on the web for uploading the bootloader and loading the STM32 package into the Arduino IDE.  For example, see: https://onetransistor.blogspot.com/2017/11/stm32-bluepill-arduino-ide.html
 
@@ -11,7 +11,7 @@ Note this code does not require the Blue Pill, it is simply what I used.  With m
 A quick summary of the features:
 * Auto mode which will control the temperature (bean or environment) and fan speed to a settable profile.  
 * Manual mode where temperature and fan speed can be controlled in real time.
-* Measured temperatures, set value, fan speed, and heater duty cycle saved to an SD card as a CSV file at 2 Hz while roasting.  See image above showing data from a roast, plotted from the CSV file using Excel.   
+* Measured temperatures, set value, fan speed, and heater duty cycle saved to an SD card as a CSV file at 2 Hz while roasting.  See image above showing data from a roast.  I've also included a python script used to plot this data from the SD card.  The script requires the python module "matplotlib".   
 * The roasting profile can be set as a sequence of up to 9 segments.  The set temperature and fan speed are linearly interpolated from one segment to the next.  This provile can be set and saved to EEPROM (flash memory on the Blue Pill) via the LCD screen interface.  
 * Separate tuneable PID values for the environement temperature and bean temperature.  A tuning mode for each controller is available allowing one to monitor the step response and tune the gains in real time.
 
@@ -22,7 +22,9 @@ A few of the parts I sourced:
 * 20x4 character I2C LCD screen ($9 on eBay)
 * 2x Adafruit Thermocouple Amplifiers, MAX31855 or MAX31856 ($15 each)
 * Adafruit MicroSD Card breakout board ($8)
+* MicroSD Card
 * Two K-type thermocouples
+* Metal thermocouple probe shield (e.g., look for the 5mm x 50 mm thermocouple probe from Uxcell on Amazon, and cut off the end of the metal shield)
 * Fotek SSR-40 DA Solid State Relay + Heat Sink ($12.50 on eBay)
 * IRLB8721PBF MOSFET (used for fan speed control)
 * 7805 5V regulator
@@ -42,11 +44,15 @@ The 12V, 22 Amp DC motor I used draws a lot of current, so be sure to use beefy 
 
 I enclosed the DC motor in my own 3D printed case and threw away the pig shaped case.  I've included the 3D printed case model in this repository, which encloses the motor and is sealed with a 3.5" O-ring.  I'm sure the pig shaped case would work too, but don't use the corrogated hose which produces too much drag.  
 
-Two temperature measurements are used.  I placed the Environment Temperature thermocouple close to the center of the chamber in the line of fire of the hot air, and the Bean Temperature probe off to the side and blocked from the upcoming air.  A picture is included below.  (Let me know if you have better ideas on placement.  I purchased one of each type of Adafruit Thermocouple amplifier (MAX31855 and MAX31856) since I wasn't sure which would work out of the box with the Blue Pill.  It turns out they both work with a few tweaks to the libraries, so my code uses both.  The code can easily be modified to use one or the other.  Both the MAX31855 and MAX31856 libraries required a small amount of changes to work correctly.  The MAX31855 library required a slight modification to the SPI communication, while the MAX31856 required a small change to eliminate the need for the 0.25 sec delay in the code.  Both modified libraries are included in this repository.
+Two temperature measurements are used.  I placed the Environment Temperature thermocouple close to the center of the chamber in the line of fire of the hot air, and the Bean Temperature probe off to the side and blocked from the upcoming air.  A metal thermocouple shield is used to hold the probes in place.  I purchased a thermocouple probe from Uxcell on Amazon that came with a metal shield, and sawed off the end of the metal shield.  I have included a photograph below showing the thermocouple placement, and a drawing as well.  The beam temperature thermocouple and wires are taped to the top of the thermocouple metal shield using Kapton tape, which allows this thermocouple to register the temperature of the beans decending along the side of the shaker lid, and outside of the stream of hot air.  
+
+<img src="/images/IMG_2029.JPG" alt="Roaster" width="450"> <img src="/images/TC_placement.JPG" alt="Roaster" width="450">
+
+I purchased one of each type of Adafruit Thermocouple amplifier (MAX31855 and MAX31856) since I wasn't sure which would work out of the box with the Blue Pill.  It turns out they both work with a few tweaks to the libraries, so my code uses both.  The code can easily be modified to use one or the other.  Both the MAX31855 and MAX31856 libraries required a small amount of changes to work correctly.  The MAX31855 library required a slight modification to the SPI communication, while the MAX31856 required a small change to eliminate the need for the 0.25 sec delay in the code.  Both modified libraries are included in this repository.
 
 I have also included a few 3D printed parts I used, which may be useful.  This repository includes a front panel for the LCD screen, and also the buttresses to hold the Bake-A-Round vertical. 
 
 The plans for a 1/4" ply laser cut case are also included if you have access to a laser cutter.  Or build your own!  
 
-<img src="/images/IMG_2028.JPG" alt="Roaster" width="420"> <img src="/images/IMG_2029.JPG" alt="Roaster" width="420">
+<img src="/images/IMG_2028.JPG" alt="Roaster"> 
 
