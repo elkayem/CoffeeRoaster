@@ -2,7 +2,7 @@
 
 <img src="/images/IMG_2012.JPG" alt="Roaster" width="420"> <img src="/images/IMG_2027.JPG" alt="Roaster" width="420">
 
-<img src="/images/profile.png" alt="Roaster">
+<img src="/images/profile.png" alt="Roaster" width="850">
 
 This repository contains the code for a PID controlled coffee roaster.  The code was designed to run on the STM32F103C8 ARM development board known as the "Blue Pill", and programmed through the Arduino IDE via USB.  There are plenty of "how to" guides on the web for uploading the bootloader and loading the STM32 package into the Arduino IDE.  For example, see: https://onetransistor.blogspot.com/2017/11/stm32-bluepill-arduino-ide.html
 
