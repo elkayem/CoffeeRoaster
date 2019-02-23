@@ -1,6 +1,6 @@
 /* 
  *    Coffee Roaster 
- *    Copyright (C) 2018  Larry McGovern
+ *    Copyright (C) 2019  Larry McGovern
  *  
  *    This program is free software: you can redistribute it and/or modify
  *    it under the terms of the GNU General Public License as published by
@@ -14,27 +14,28 @@
  */
  
 #include <SD.h>
-#include "Wire.h"
+#include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <SPI.h>
 #include <EEPROM.h>
 #include "Adafruit_MAX31855.h"
-#include "Adafruit_MAX31856.h"
 #include <Bounce2.h>
 
-#define B_STARTSTOP PB12
-#define B_MODE      PB13
-#define B_SEL       PB14
-#define B_INC       PB15
-#define B_DEC       PA8
-#define FAN_PWM     PA1
-#define SD_CS       PB0
-#define ENVTEMP_CS  PA3
-#define BEANTEMP_CS PA4
-#define HEATER      PB11
+//
+// Teensy 3.5/3.6 pin definitions
+//
+#define B_STARTSTOP 33
+#define B_MODE      34
+#define B_SEL       35
+#define B_INC       36
+#define B_DEC       37
+#define FAN_PWM     2
+#define SD_CS       BUILTIN_SDCARD
+#define ENVTEMP_CS  9
+#define BEANTEMP_CS 10
+#define HEATER      32
 
-Adafruit_MAX31855 thermocouple(BEANTEMP_CS);
-Adafruit_MAX31856 envTempSens = Adafruit_MAX31856(ENVTEMP_CS);
+Adafruit_MAX31855 beanTempSens(BEANTEMP_CS),envTempSens(ENVTEMP_CS);
 
 LiquidCrystal_I2C lcd(0x27,20,4);  
 
@@ -71,7 +72,7 @@ enum ControlVar {
 
 ControlVar controlVarMan = BEAN, controlVarAuto = BEAN;
 
-// EEPROM (Flash memory) Addresses
+// EEPROM Addresses
 #define ADDR_KP_E 0  
 #define ADDR_KI_E 2
 #define ADDR_KD_E 4
@@ -112,31 +113,32 @@ class PidController {
 
 PidController envController, beanController;
 
-int numSeg = 9;
+// Profile global variables -- 9 segments used to define roasting profile for auto roast
 int currentSeg = 1;
 int currentSegTime;
 double currentSetTemp, saveSetTemp;
 
 // Default profile
-uint16_t segTime[9] = {30,  90,  120, 60,  60,  90,  90,  300, 0};
-uint16_t segTemp[9] = {120, 200, 270, 300, 325, 350, 370, 420, 0};
-uint16_t segFan[9]  = {100, 100, 90,  85,  80,  75,  70,  70,  0};
+uint16_t segTime[9] = {30,  90,  120, 60,  60,  90,  90,  330, 30}; // Time (in sec) for each segment
+uint16_t segTemp[9] = {130, 210, 280, 310, 335, 360, 380, 430, 40}; // Final temperature (deg F) after completion of segment
+uint16_t segFan[9]  = {85, 80, 70,  65,  65,  65,  65,  60,  100};  // Final fan speed (0 - 100) at completion of temperature
 
-double envTemp =  0; // Current temperature measurements
+// Current environment and bean temperature measurements
+double envTemp =  0; 
 double beanTemp = 0;
 
 int envTempErrCtr = 0, beanTempErrCtr = 0; // Error counters
 #define ERR_CTR_TIMEOUT 6
 
+// Global variables for heat duty cycle (0-100) and fan duty cycle (0-100)
 double heat = 0;
 double fan = 0;
 
-#define MIN_FAN_SPEED 20  // Minimum fan speed when heater is on
+#define MIN_FAN_SPEED 50  // Minimum fan speed when heater is on, for safety
 
 uint8_t heaterState;
 
 unsigned long int secTimer = 0;
-uint16_t maxduty;
 
 char filename[] = "LOG0000.CSV";
 File logfile;
@@ -168,10 +170,8 @@ void setup() {
   decButton.attach(B_DEC);
   decButton.interval(25);
 
-  HardwareTimer pwmtimer(2);  // PA1 on timer 2, channel 2
-  pinMode(FAN_PWM, PWM);
-  pwmtimer.setPrescaleFactor(1);
-  maxduty = pwmtimer.setPeriod(100);  // 100 us = 10 kHz
+  analogWriteFrequency(FAN_PWM, 10000); // 10 kHz PWM for fan control
+  analogWriteResolution(12);  // 12-bit resolution on analogWrite commands
   setFanSpeed();
 
   lcd.init();
@@ -185,7 +185,6 @@ void setup() {
   }
   lcd.clear();
   
-
   lcd.setCursor(3, 0);
   lcd.print("COFFEE ROASTER");
   lcd.setCursor(9, 2);
@@ -194,15 +193,12 @@ void setup() {
   lcd.print("Larry McGovern");
 
   delay(2000);
-
-  EEPROM.init();
   
   // Load control gains
-  uint16_t Kp, Ki, Kd;
   bool useDefaults = false;
-  EEPROM.read(ADDR_KP_E, &Kp);  
-  EEPROM.read(ADDR_KI_E, &Ki);
-  EEPROM.read(ADDR_KD_E, &Kd);
+  uint16_t Kp = readEepromUint16(ADDR_KP_E);  
+  uint16_t Ki = readEepromUint16(ADDR_KI_E);
+  uint16_t Kd = readEepromUint16(ADDR_KD_E);
 
   // If all of the gains are zero or any are out of bounds, assume EEPROM isn't initialized
   // and use default values
@@ -214,9 +210,10 @@ void setup() {
   }
   envController.setPidGains(Kp, Ki, Kd);
   
-  EEPROM.read(ADDR_KP_B, &Kp);
-  EEPROM.read(ADDR_KI_B, &Ki);
-  EEPROM.read(ADDR_KD_B, &Kd);
+  Kp = readEepromUint16(ADDR_KP_B);  
+  Ki = readEepromUint16(ADDR_KI_B);
+  Kd = readEepromUint16(ADDR_KD_B);
+
   if (useDefaults || ((Kp == 0) && (Ki == 0) && (Kd == 0)) || Kp > 999 || Ki > 999 || Kd > 999) {
     useDefaults = true;
     Kp = KP_B_DEFAULT;
@@ -228,9 +225,9 @@ void setup() {
   // Load segment times and temperatures
   if (!useDefaults) {
     for (int i = 0; i < 9; i++) {
-      EEPROM.read(ADDR_SEG_TIME + 2*i, &segTime[i]);
-      EEPROM.read(ADDR_SEG_TEMP + 2*i, &segTemp[i]);
-      EEPROM.read(ADDR_SEG_FAN  + 2*i, &segFan[i]);
+      segTime[i] = readEepromUint16(ADDR_SEG_TIME + 2*i);
+      segTemp[i] = readEepromUint16(ADDR_SEG_TEMP + 2*i);
+      segFan[i]  = readEepromUint16(ADDR_SEG_FAN + 2*i);
       if (segTime[i] > 900) segTime[i] = 30;
       if (segTemp[i] > 500) segTemp[i] = 100;
       if (segFan[i] > 100) segFan[i] = 100;
@@ -243,11 +240,10 @@ void setup() {
 
   // Load default control variable
   if (!useDefaults) {
-    uint16_t cv;
-    EEPROM.read(ADDR_CVAR_MAN, &cv);
+    uint16_t cv = readEepromUint16(ADDR_CVAR_MAN); 
     if (cv == 0) controlVarMan = ENV;
     else controlVarMan = BEAN;
-    EEPROM.read(ADDR_CVAR_AUTO, &cv);
+    cv = readEepromUint16(ADDR_CVAR_AUTO);
     if (cv == 0) controlVarAuto = ENV;
     else controlVarAuto = BEAN;
   }
@@ -256,9 +252,6 @@ void setup() {
     mode = INIT;
     saveSettings();
   }
-  
-  envTempSens.begin();
-  //envTempSens.setThermocoupleType(MAX31856_TCTYPE_K); // Already default in .begin();
 
   mode = AUTO;
   editVal = FAN;
@@ -285,25 +278,25 @@ void loop() {
   static unsigned long incButtonPressTimeStamp2, decButtonPressTimeStamp2;
   static uint16_t fan0;
   static double setTemp0;
-  int rate;
+  uint16_t rate;
   
   /*
    * Button Logic
    */
   startStopButton.update();
-  if (startStopButton.fell()) {
-    roast = !roast;
-    if (roast) { // If starting new roast
+  if (startStopButton.fell()) {  // Called when start/stop button pressed
+    roast = !roast; // Toggle roast state
+    if (roast) {    // If starting new roast
         elapsedTimeStart = millis();
-        for (uint16_t i = 0; i < 9999; i++) {
+        for (uint16_t i = 0; i < 9999; i++) {  // Pick a new file name
           filename[3] = i / 1000 + '0';
           filename[4] = i / 100 % 10 + '0';
           filename[5] = i / 10 % 10 + '0';
           filename[6] = i % 10 + '0';
-          if (! SD.exists(filename)) {
+          if (!SD.exists(filename)) {
             // only open a new file if it doesn't exist
             logfile = SD.open(filename, FILE_WRITE);
-            break;  // leave the loop!
+            break;  
           }
       }
       logfile.println("Time, Control Temp, Env Temp, Bean Temp, Heat, Fan");
@@ -318,12 +311,12 @@ void loop() {
         segTimeStart = elapsedTimeStart; 
       }
     }
-    else {
+    else {  // End the roast
       envController.reset();
       beanController.reset();
       logfile.close();
     }
-  }
+  }  // end if (startStopButton.fell())
 
   modeButton.update();
   if (modeButton.fell()) {  // Switch Modes
@@ -354,11 +347,13 @@ void loop() {
           mode = AUTO;
           editVal = FAN;
           break;
+        default:
+          break;
       }
     }
     lcd.clear();
     updateDisplay();
-  }
+  } // end if (modeButton.fell())
 
   selButton.update();
   if (selButton.fell()) {  // Make new selection (MANUAL and SETTINGS modes)
@@ -381,13 +376,16 @@ void loop() {
         else if (editVal == KI) editVal = KD;
         else if (editVal == KD) editVal = TEMP;  
         else if (editVal == TEMP) editVal = FAN;  
-        else if (editVal == FAN) editVal = KP;      
+        else if (editVal == FAN) editVal = KP;  
+        break;  
+      default:  
+        break;
     }
     updateDisplay();
-  }
+  } // end if (selButton.fell())
 
   incButton.update();
-  if (incButton.fell()) { // Button was pushed
+  if (incButton.fell()) { // Increment button was pushed.  Increment selection
       if (editVal == CVAR) {
         if (mode == SETTINGS) controlVarAuto = (controlVarAuto == ENV ? BEAN : ENV);
         else controlVarMan = (controlVarMan == ENV ? BEAN : ENV);
@@ -403,18 +401,18 @@ void loop() {
         currentSetTemp = (double)segTemp[currentSeg-1];
         updateDisplay();
       }
-      else {
+      else {  // editVal = TEMP, FAN, TIME, KP, KI, or KD
         incState = true;
         incButtonPressTimeStamp1 = millis();
         incButtonPressTimeStamp2 = incButtonPressTimeStamp1;       
       }
-  }
+  } // end if (incButton.fell())
   else if (incButton.read() == HIGH) { // Button has been released
       incState = false;
   }
 
-  if (incState) {
-    if (millis() - incButtonPressTimeStamp1 >= 4000)  // If button depressed for longer than 4 seconds, then increment faster
+  if (incState) { // used when increment button pressed while editVal = TEMP, FAN, TIME, KP, KI, or KD
+    if (millis() - incButtonPressTimeStamp1 >= 3000)  // If button depressed for longer than 3 seconds, then increment faster
       rate = 50;
     else
       rate = 500;
@@ -426,7 +424,7 @@ void loop() {
   }
   
   decButton.update();
-  if (decButton.fell()) { // Button was pushed
+  if (decButton.fell()) { // Decrement button was pushed.  Decrement selection
       if (editVal == CVAR) {
         if (mode == SETTINGS) controlVarAuto = (controlVarAuto == ENV ? BEAN : ENV);
         else controlVarMan = (controlVarMan == ENV ? BEAN : ENV);
@@ -442,7 +440,7 @@ void loop() {
         currentSetTemp = (double)segTemp[currentSeg-1];
         updateDisplay();
       }
-      else {
+      else { // editVal = TEMP, FAN, TIME, KP, KI, or KD
         decState = true;
         decButtonPressTimeStamp1 = millis();
         decButtonPressTimeStamp2 = decButtonPressTimeStamp1;       
@@ -452,8 +450,8 @@ void loop() {
       decState = false;
   }
 
-  if (decState) {
-    if (millis() - decButtonPressTimeStamp1 >= 4000)
+  if (decState) { // used when increment button pressed while editVal = TEMP, FAN, TIME, KP, KI, or KD
+    if (millis() - decButtonPressTimeStamp1 >= 3000)
       rate = 50;
     else
       rate = 500;
@@ -470,8 +468,9 @@ void loop() {
   static bool firstMeas = false;  // Temperatures measured twice every second and averaged
   static double envTempMeas1 = NAN, beanTempMeas1 = NAN;
   static double envTempAve = 0, beanTempAve = 0;
-  
-  if ((millis() - secTimer >= 500) && (firstMeas == false)) { 
+
+  if ((millis() - secTimer >= 500) && (firstMeas == false)) { // First measurement, called at the half-second mark
+    
     readTempSensors();
     
     if (envTempErrCtr == 0)  envTempMeas1 = envTemp;    
@@ -479,22 +478,24 @@ void loop() {
     
     if (beanTempErrCtr == 0) beanTempMeas1 = beanTemp;    
     else beanTempMeas1 = NAN;  
-      
+
     updateDisplay();
     updateSD();
     
     firstMeas = true;
   }
   
-  if (millis() - secTimer >= 1000) {
+  if (millis() - secTimer >= 1000) { // Second measurement and duty cycle update, called at the 1 second mark 
     secTimer = millis();
     
-    if (heat > 0) heaterState = HIGH;
+    // If the heat duty cycle > 0 and we're roasting,
+    // then turn on heater at beginning of 1 second interval
+    if ((heat > 0) && roast) heaterState = HIGH;
     else  heaterState = LOW;
-    digitalWrite(HEATER, heaterState);  // Turn on heater at beginning of 1 second interval
+    digitalWrite(HEATER, heaterState);  
     
     readTempSensors();
-
+    
     if (!isnan(envTempMeas1) && (envTempErrCtr == 0) ) // Two valid measurements
       envTempAve = 0.5 * (envTempMeas1 + envTemp);    // Calculate average
     else
@@ -507,19 +508,23 @@ void loop() {
 
     // Calculate feedback control
     heat = 0;  // Heat off by default
-    if (roast) {
-      if (mode == AUTO) {
-        currentSegTime = (int)segTime[currentSeg-1] - (int)(millis() - segTimeStart)/1000;
-        if (currentSegTime < 1) {
+    if (roast) {  // If we're roating, calculate temperature set values and heater/fan duty cycles
+      if (mode == AUTO) { // Auto roast follows segment profiles
+        currentSegTime = (int)segTime[currentSeg-1] - (int)(millis() - segTimeStart)/1000; // Counts down in seconds from segTime to 1
+        if (currentSegTime < 1) { // If we reach 0, it is time to move to the next segment
           setTemp0 = (double)segTemp[currentSeg-1];
           fan0 = segFan[currentSeg-1];
           currentSeg++;
-          
+
+          // End the roast if we are at the end of the 9th segment, or the next segment length is 0
           bool endRoast = false;
           if (currentSeg > 9) endRoast = true;
           else if (segTime[currentSeg-1] == 0) endRoast = true;
-          if (endRoast == true) {
+          
+          if (endRoast == true) { // End the roast
             roast = false;
+            fan = fan0;  // Turn fan speed to the final segment fan speed value
+            setFanSpeed();
             currentSeg = 1;
             heat = 0;
             envController.reset();
@@ -529,7 +534,9 @@ void loop() {
           }
           currentSegTime = segTime[currentSeg-1];
           segTimeStart = millis(); 
-        }
+        }  // end if (currentSegTime < 1)
+
+        // Linearly interpolate the current set temperature and fan duty cycle 
         currentSetTemp = setTemp0 + ((double)segTemp[currentSeg-1] - setTemp0) * (double)(millis() - segTimeStart)/(1000*(double)segTime[currentSeg-1]);
         fan = deltaFan + (int)((double)fan0 + ((double)segFan[currentSeg-1] - (double)fan0) * (double)(millis() - segTimeStart)/(1000*(double)segTime[currentSeg-1]));
       }
@@ -545,14 +552,12 @@ void loop() {
       }
     }
 
-    if ((heat > 0) && (fan < MIN_FAN_SPEED)) {
+    if ((heat > 0) && (fan < MIN_FAN_SPEED)) {  // Always make sure fan is on and at minimum fan speed if the heater is on
         fan = MIN_FAN_SPEED;
     }
     setFanSpeed();
-    
     updateDisplay();
     updateSD();
-
     firstMeas = false;
   }
 
@@ -561,7 +566,7 @@ void loop() {
 }
 
 /*
- * Save settings to EEPROM (flash memory)
+ * Save settings to EEPROM.  This is called whenever switching modes.
  */
 void saveSettings() {
   uint16_t cv;
@@ -569,27 +574,27 @@ void saveSettings() {
     if ((mode == MANUAL) || (mode == INIT)) {
       if (controlVarMan == ENV)  cv = 0;
       else cv = 1;
-      EEPROM.write(ADDR_CVAR_MAN, cv);
+      writeEepromUint16(ADDR_CVAR_MAN, cv);
     }
     if ((mode == SETTINGS) || (mode == INIT)) {
       if (controlVarAuto == ENV)  cv = 0;
       else cv = 1;
-      EEPROM.write(ADDR_CVAR_AUTO, cv);
+      writeEepromUint16(ADDR_CVAR_AUTO, cv);
       for (int i = 0; i < 9; i++) {
-         EEPROM.write(ADDR_SEG_TIME + 2*i, segTime[i]);
-         EEPROM.write(ADDR_SEG_TEMP + 2*i, segTemp[i]);
-         EEPROM.write(ADDR_SEG_FAN  + 2*i, segFan[i]);
+         writeEepromUint16(ADDR_SEG_TIME + 2*i, segTime[i]);
+         writeEepromUint16(ADDR_SEG_TEMP + 2*i, segTemp[i]);
+         writeEepromUint16(ADDR_SEG_FAN  + 2*i, segFan[i]);
       }
     }
     if ((mode == PIDTUNE_E) || (mode == INIT)) {
-      EEPROM.write(ADDR_KP_E, envController.Kp);
-      EEPROM.write(ADDR_KI_E, envController.Ki);
-      EEPROM.write(ADDR_KD_E, envController.Kd);
+      writeEepromUint16(ADDR_KP_E, envController.Kp);
+      writeEepromUint16(ADDR_KI_E, envController.Ki);
+      writeEepromUint16(ADDR_KD_E, envController.Kd);
     }
     if ((mode == PIDTUNE_B) || (mode == INIT)) {
-      EEPROM.write(ADDR_KP_B, beanController.Kp);
-      EEPROM.write(ADDR_KI_B, beanController.Ki);
-      EEPROM.write(ADDR_KD_B, beanController.Kd);
+      writeEepromUint16(ADDR_KP_B, beanController.Kp);
+      writeEepromUint16(ADDR_KI_B, beanController.Ki);
+      writeEepromUint16(ADDR_KD_B, beanController.Kd);
     }
     if (mode != INIT) {
       lcd.clear();
@@ -602,22 +607,23 @@ void saveSettings() {
 }
 
 /*
- * Check to see if heater needs to be turned off
+ * heaterDutyCycleOff() -- Check to see if heater needs to be turned off
  */
 void heaterDutyCycleOff() {
-  int dc = (int)(10*heat);
+  uint16_t dc = (uint16_t)(10*heat);  // Duty cycle integer from 0 - 1000
   if (heat >= 100.0) return;  // Will leave heater on no matter what
-  if ((millis() - secTimer + 100 > dc) && (heaterState == HIGH)) { // Check if we need to turn off heater within the next 100 ms
-    while (millis() - secTimer < dc); // Just wait until the right time
+  if ((millis() - secTimer >= dc) && (heaterState == HIGH)) { 
     heaterState = LOW;
     digitalWrite(HEATER, LOW);
   }
 }
+
 /*
- * Read temperature sensors
+ * readTempSensors() -- Read temperature sensors
  */
 void readTempSensors() {
-  double envTempC = envTempSens.readThermocoupleTemperature();
+
+  double envTempC = envTempSens.readCelsius();
   if (isnan(envTempC)) {  
     envTempErrCtr++;
   }
@@ -625,8 +631,9 @@ void readTempSensors() {
     envTemp = 32.0f + 1.8f * envTempC;
     envTempErrCtr = 0;
   }
+  
+  double beanTempC = beanTempSens.readCelsius();
 
-  double beanTempC = thermocouple.readCelsius();
   if (isnan(beanTempC)) {  
     beanTempErrCtr++;
   }
@@ -635,12 +642,17 @@ void readTempSensors() {
     beanTempErrCtr = 0;
   }
 
+//  Serial.print("Env Temp = ");
+//  Serial.print(envTempC);
+//  Serial.print(", Bean Temp = ");
+//  Serial.println(beanTempC); 
+  
   if (envTempErrCtr >= ERR_CTR_TIMEOUT) envTemp = NAN;
   if (beanTempErrCtr >= ERR_CTR_TIMEOUT) beanTemp = NAN;
 }
  
 /*
- * Update SD Card
+ * updateSD() -- Update SD Card (called every 0.5 seconds when roasting)
  */
 void updateSD() {
     heaterDutyCycleOff();  
@@ -661,7 +673,7 @@ void updateSD() {
     }
 }
 /*
- * Update Display
+ * updateDisplay() -- Update LCD
  */
 void updateDisplay() {
   char timeStr[5];
@@ -682,8 +694,7 @@ void updateDisplay() {
    if (mode == AUTO || mode == SETTINGS) { // Common for both AUTO and SETTINGS
       lcd.setCursor(1,1);
       lcd.print(currentSeg);
-      lcd.print("/");
-      lcd.print(numSeg);
+      lcd.print("/9");
       lcd.setCursor(5,1);
       formattedTime(timeStr,currentSegTime); 
       lcd.print(timeStr);    
@@ -802,6 +813,10 @@ void printPercent(int p) {
   lcd.print("%");
 }
 
+/*
+ * showSelection() -- Move the ">" character whenever the SEL button is pressed, indicating which
+ *                    variable can be edited
+ */
 void showSelection() {
   switch (editVal) {
     case SEG:
@@ -873,9 +888,15 @@ void showSelection() {
       lcd.print(" ");
       lcd.setCursor(10,3);
       lcd.print(">");
+      break;
+    default:
+      break;
   }
 }
 
+/*
+ * showSelectionPID() -- Show Selection function for PID tuning screen
+ */
 void showSelectionPID() {
    switch (editVal) {
     case KP:
@@ -937,15 +958,21 @@ void showSelectionPID() {
       lcd.print(" ");  
       lcd.setCursor(4,3);
       lcd.print(">");
+      break;
+    default:
+      break;
    }
 }
 
+/*
+ * incDecSelection(incDec) -- Increment or decrement selection
+ */
 void incDecSelection(int incDec) { 
   uint16_t Kp, Ki, Kd;
   
   switch (editVal) {
     case TIME:
-      currentSegTime = currentSegTime += 5*incDec;
+      currentSegTime += 5*incDec;
       if (currentSegTime < 0) currentSegTime = 0;
       if (currentSegTime > 900) currentSegTime = 900;
       segTime[currentSeg-1] = currentSegTime;
@@ -1016,15 +1043,24 @@ void incDecSelection(int incDec) {
       else beanController.Kd = Kd;
       savedata = true;
       break; 
+    default:
+      break;
   }
   updateDisplay();
 }
 
+/*
+ * setFanSpeed() -- Set fan duty PWM duty cycle to the current value of global variable fan
+ */
 void setFanSpeed() {
-  pwmWrite(FAN_PWM, fan * (double) maxduty / 100.0f);
+  uint16_t fan_12b = (uint16_t) (fan * 40.96); // Map fan speed (0-100) to 12-bit integer (0 to 4095), or 4096 to force pin high
+  if (fan_12b > 4096) fan_12b = 4096;           
+  analogWrite(FAN_PWM, fan_12b);
 }
 
-// PID Controller
+/*
+ * PID Controller functions
+ */
 double PidController::calcControl(double measTemp) {
   double err = currentSetTemp - measTemp;
  
@@ -1057,3 +1093,12 @@ void PidController::reset() {
    for (int i=0; i < BUFFERSIZE; i++) errBuffer[i] = 0;
 }
 
+// Read two consecutive EEPROM addresses and return uint16
+inline uint16_t readEepromUint16(int addr) {
+  return (((uint16_t)EEPROM.read(addr + 0) << 8) | (uint16_t)EEPROM.read(addr + 1));
+}
+// Write uint16 to two consecutive EEPROM addresses
+inline void writeEepromUint16(int addr, uint16_t data) {   
+  EEPROM.write(addr,   (uint8_t)(data >> 8));
+  EEPROM.write(addr+1, (uint8_t)data);
+}
