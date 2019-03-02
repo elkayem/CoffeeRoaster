@@ -123,9 +123,10 @@ uint16_t segTime[9] = {30,  90,  120, 60,  60,  90,  90,  330, 30}; // Time (in 
 uint16_t segTemp[9] = {130, 210, 280, 310, 335, 360, 380, 430, 40}; // Final temperature (deg F) after completion of segment
 uint16_t segFan[9]  = {85, 80, 70,  65,  65,  65,  65,  60,  100};  // Final fan speed (0 - 100) at completion of temperature
 
-// Current environment and bean temperature measurements
+// Environment, bean, and ambient temperature measurements
 double envTemp =  0; 
 double beanTemp = 0;
+double ambTemp = 0;
 
 int envTempErrCtr = 0, beanTempErrCtr = 0; // Error counters
 #define ERR_CTR_TIMEOUT 6
@@ -142,7 +143,11 @@ unsigned long int secTimer = 0;
 
 char filename[] = "LOG0000.CSV";
 File logfile;
+bool sdPresent = true;
 
+/*
+ * Setup
+ */
 void setup() {
   Serial.begin(115200);
   pinMode(B_STARTSTOP, INPUT_PULLUP);
@@ -178,9 +183,15 @@ void setup() {
   lcd.setBacklight(HIGH);
   lcd.setCursor(0,1);
   lcd.print("Looking for SD Card");
-  
+  lcd.setCursor(0,3);
+  lcd.print("Press SEL to bypass");
+
   while (SD.begin(SD_CS) != true)
   {
+    if (digitalRead(B_SEL)== LOW) { // SEL pressed, bypass SD card
+      sdPresent = false;
+      break;
+    }
     delay(10);
   }
   lcd.clear();
@@ -264,8 +275,7 @@ void setup() {
 unsigned long int elapsedTimeStart = 0, segTimeStart;
 float elapsedTime = 0.0;
 
-bool roast = false;
-bool savedata = false;
+bool roast = false, savedata = false, artisanPid = false, artisanPidPrev = false;
 
 int deltaFan;  // User adjust on fan speed made during auto roast
 
@@ -279,28 +289,42 @@ void loop() {
   static uint16_t fan0;
   static double setTemp0;
   uint16_t rate;
+
+  getSerialCmd();  // Look for incoming serial commands from Artisan
   
   /*
    * Button Logic
    */
   startStopButton.update();
-  if (startStopButton.fell()) {  // Called when start/stop button pressed
-    roast = !roast; // Toggle roast state
+  if (startStopButton.fell() ||            // Called when start/stop button pressed,
+      (artisanPid != artisanPidPrev)) {    // or Artisan PID On or Off command received in Manual or PID TUNE mode
+    if (artisanPid != artisanPidPrev) { // Received a command from Artisan
+      artisanPidPrev = artisanPid;
+      if (roast == artisanPid) return;  // Roast state was already in correct state, do nothing
+      roast = artisanPid;
+    }
+    else { // Button was pushed
+      roast = !roast; // Toggle roast state
+      artisanPid = roast;  // Treat a start/stop button push as if the command came from Artisan
+      artisanPidPrev = artisanPid; 
+    }
     if (roast) {    // If starting new roast
         elapsedTimeStart = millis();
-        for (uint16_t i = 0; i < 9999; i++) {  // Pick a new file name
-          filename[3] = i / 1000 + '0';
-          filename[4] = i / 100 % 10 + '0';
-          filename[5] = i / 10 % 10 + '0';
-          filename[6] = i % 10 + '0';
-          if (!SD.exists(filename)) {
-            // only open a new file if it doesn't exist
-            logfile = SD.open(filename, FILE_WRITE);
-            break;  
-          }
+        if (sdPresent) {
+          for (uint16_t i = 0; i < 9999; i++) {  // Pick a new file name
+            filename[3] = i / 1000 + '0';
+            filename[4] = i / 100 % 10 + '0';
+            filename[5] = i / 10 % 10 + '0';
+            filename[6] = i % 10 + '0';
+            if (!SD.exists(filename)) {
+              // only open a new file if it doesn't exist
+              logfile = SD.open(filename, FILE_WRITE);
+              break;  
+            }
+        }
+        logfile.println("Time, Control Temp, Env Temp, Bean Temp, Heat, Fan");
+        logfile.flush();
       }
-      logfile.println("Time, Control Temp, Env Temp, Bean Temp, Heat, Fan");
-      logfile.flush();
       if (mode == AUTO) {
         currentSetTemp = (double)segTemp[0];
         currentSegTime = segTime[0];
@@ -314,7 +338,7 @@ void loop() {
     else {  // End the roast
       envController.reset();
       beanController.reset();
-      logfile.close();
+      if (sdPresent) logfile.close();
     }
   }  // end if (startStopButton.fell())
 
@@ -529,7 +553,7 @@ void loop() {
             heat = 0;
             envController.reset();
             beanController.reset();
-            logfile.close();
+            if (sdPresent) logfile.close();
             return;
           }
           currentSegTime = segTime[currentSeg-1];
@@ -550,10 +574,6 @@ void loop() {
           heat = beanController.calcControl(beanTempAve);
         }
       }
-    }
-
-    if ((heat > 0) && (fan < MIN_FAN_SPEED)) {  // Always make sure fan is on and at minimum fan speed if the heater is on
-        fan = MIN_FAN_SPEED;
     }
     setFanSpeed();
     updateDisplay();
@@ -623,6 +643,9 @@ void heaterDutyCycleOff() {
  */
 void readTempSensors() {
 
+  ambTemp = 0.5 * (envTempSens.readInternal() + beanTempSens.readInternal());
+  ambTemp = 32.0 + 1.8 * ambTemp;
+  
   double envTempC = envTempSens.readCelsius();
   if (isnan(envTempC)) {  
     envTempErrCtr++;
@@ -638,14 +661,9 @@ void readTempSensors() {
     beanTempErrCtr++;
   }
   else {
-    beanTemp = 32.0f + 1.8f * beanTempC;
+    beanTemp = 32.0 + 1.8 * beanTempC;
     beanTempErrCtr = 0;
   }
-
-//  Serial.print("Env Temp = ");
-//  Serial.print(envTempC);
-//  Serial.print(", Bean Temp = ");
-//  Serial.println(beanTempC); 
   
   if (envTempErrCtr >= ERR_CTR_TIMEOUT) envTemp = NAN;
   if (beanTempErrCtr >= ERR_CTR_TIMEOUT) beanTemp = NAN;
@@ -655,8 +673,7 @@ void readTempSensors() {
  * updateSD() -- Update SD Card (called every 0.5 seconds when roasting)
  */
 void updateSD() {
-    heaterDutyCycleOff();  
-    if (roast) {  //logfile.println("Time, Env Temp, Bean Temp, Heat, Fan");
+    if (roast && sdPresent) {  //logfile.println("Time, Env Temp, Bean Temp, Heat, Fan");
       elapsedTime = (float)(millis() - elapsedTimeStart)/1000.0f;
       logfile.print(elapsedTime,1);  
       logfile.print(", ");  
@@ -677,8 +694,6 @@ void updateSD() {
  */
 void updateDisplay() {
   char timeStr[5];
-
-  heaterDutyCycleOff();
   
    if (mode == SETTINGS) {  // Unique display for settings
       lcd.setCursor(0,0);
@@ -999,17 +1014,13 @@ void incDecSelection(int incDec) {
         savedata = true;
       }
       else {
-        if (mode == AUTO) {
+        if (roast) {  // If roasting,increment fan 1% at a time for precision
           deltaFan += incDec;
           fan += incDec;          
         }
-        else fan += 5*incDec;
+        else fan += 5*incDec;  // Otherwise increment fan 5% at a time
         if (fan > 100) fan = 100;
         else if (fan < 0) fan = 0;
-
-        if ((heat > 0) && (fan < MIN_FAN_SPEED)) {
-          fan = MIN_FAN_SPEED;
-        }
         setFanSpeed();
       }
       break;
@@ -1053,6 +1064,9 @@ void incDecSelection(int incDec) {
  * setFanSpeed() -- Set fan duty PWM duty cycle to the current value of global variable fan
  */
 void setFanSpeed() {
+  if ((heat > 0) && (fan < MIN_FAN_SPEED)) {  // Always make sure fan is on and at minimum fan speed if the heater is on
+      fan = MIN_FAN_SPEED;
+  }
   uint16_t fan_12b = (uint16_t) (fan * 40.96); // Map fan speed (0-100) to 12-bit integer (0 to 4095), or 4096 to force pin high
   if (fan_12b > 4096) fan_12b = 4096;           
   analogWrite(FAN_PWM, fan_12b);
@@ -1092,6 +1106,78 @@ void PidController::reset() {
    intErr = 0;
    for (int i=0; i < BUFFERSIZE; i++) errBuffer[i] = 0;
 }
+
+/*
+ * getSerialCmd() -- Look for incoming serial commands from Artisan, and parse as needed
+ * The coffee roaster will need to be configured as a TC4.  
+ * 
+ * Current TC4 commands supported:
+ * READ -- reply: ambTemp, envTemp, beanTemp, 0, 0, heat, fan, currentSetTemp
+ * PID;ON -- Turns on roast if in Manual or PID tune mode
+ * PID;OFF -- Turns off roast if in Manual or PID tune mode
+ * PID;SV;vvv -- Sets control temperature to vvv
+ * DCFAN;vvv -- Sets fan duty cycle to vvv
+ * CHAN, UNIT, FILT -- Not supported, but Artisan expects a "#" reply so this is sent
+ * 
+ * All other commands currently not supported
+ */
+#define MAXSERIALCMD 40   // Maximum length of commands from Artisan  
+void getSerialCmd(){
+  static char serialCmd[MAXSERIALCMD];
+  static int indx = 0;
+  char *tok;
+  
+  if (Serial.available() > 0) {
+    char c = Serial.read();
+    serialCmd[indx] = toupper(c);
+    
+    if ((c == '\n') || (c == '\r')){  // Time to parse the command
+      serialCmd[indx] = '\0';  // Null-terminate string
+      
+      if (strncmp(serialCmd,"READ",4)==0) {   // READ -- return data to Artisan
+        Serial.print(ambTemp); Serial.print(",");
+        Serial.print(envTemp); Serial.print(",");
+        Serial.print(beanTemp); Serial.print(",");
+        Serial.print("0,0,");
+        Serial.print(heat); Serial.print(",");
+        Serial.print(fan); Serial.print(",");
+        Serial.println(currentSetTemp);
+      }
+      
+      else if ((strncmp(serialCmd,"CHAN",4)==0) |  // CHAN, UNITS, and FILT commands
+               (strncmp(serialCmd,"UNIT",4)==0) |  // are not supported by Coffee Roaster,
+               (strncmp(serialCmd,"FILT",4)==0)){  // but Artisan still expects a "#" reply
+        Serial.println("#");
+       }
+       
+       else if (strncmp(serialCmd,"PID",3)==0) {   // PID command
+         tok = strtok(serialCmd,";, "); // Pointer to first string "PID"
+         tok = strtok(NULL,";, ");      // Pointer to second string
+
+         if (strncmp(tok,"ON",2)==0) { // PID;ON command -- Start roast if in Manual or PID Tune mode
+           if ((mode == MANUAL) || (mode == PIDTUNE_B) || (mode == PIDTUNE_E)) artisanPid = true;
+         }
+
+         else if (strncmp(tok,"OFF",2)==0) { // PID;OFF command -- Stop roast if in Manual or PID Tune mode
+           if ((mode == MANUAL) || (mode == PIDTUNE_B) || (mode == PIDTUNE_E)) artisanPid = false;
+         }
+         
+         if (strncmp(tok,"SV",2)==0) {       // PID;SV;vvv -- Set temperature command if in Manual or PID Tune mode
+           tok = strtok(NULL,";, ");  // Pointer to third string
+           if ((mode == MANUAL) || (mode == PIDTUNE_B) || (mode == PIDTUNE_E)) currentSetTemp = atof(tok);
+         }
+       }
+       else if (strncmp(serialCmd,"DCFAN",3)==0) { // DCFAN;vvv -- Set fan duty cycle to vvv
+         tok = strtok(serialCmd,";, "); // Pointer to first string "PID"
+         tok = strtok(NULL,";, ");      // Pointer to second string  
+         if ((mode == MANUAL) || (mode == PIDTUNE_B) || (mode == PIDTUNE_E)) fan = atof(tok);
+       }
+       indx = 0; // Set index to zero in preparation for a new command
+    }
+    else if (indx <= MAXSERIALCMD - 2) indx++;
+  }
+}
+
 
 // Read two consecutive EEPROM addresses and return uint16
 inline uint16_t readEepromUint16(int addr) {
