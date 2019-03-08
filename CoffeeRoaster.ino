@@ -272,11 +272,10 @@ void setup() {
   updateDisplay();
 }
 
-unsigned long int elapsedTimeStart = 0, segTimeStart;
+unsigned long elapsedTimeStart = 0;
 float elapsedTime = 0.0;
 
-bool roast = false, savedata = false, artisanPid = false, artisanPidPrev = false;
-
+bool roast = false, savedata = false, artisanPid = false, artisanPidPrev = false, endAutoRoast = false;;
 int deltaFan;  // User adjust on fan speed made during auto roast
 
 /*
@@ -284,6 +283,7 @@ int deltaFan;  // User adjust on fan speed made during auto roast
  */
 void loop() {
   static bool incState, decState;
+  static unsigned long segTimeStart;
   static unsigned long incButtonPressTimeStamp1, decButtonPressTimeStamp1;
   static unsigned long incButtonPressTimeStamp2, decButtonPressTimeStamp2;
   static uint16_t fan0;
@@ -296,6 +296,22 @@ void loop() {
    * Button Logic
    */
   startStopButton.update();
+  modeButton.update();
+  selButton.update();
+  incButton.update();
+  decButton.update();
+
+  if (endAutoRoast) {  // Auto roast has ended.  We are waiting for any button to be pushed to reset auto roast.
+    if (startStopButton.fell() || modeButton.fell() || selButton.fell() || incButton.fell() || decButton.fell()) { // Button was pushed
+      endAutoRoast = false;
+      fan = 0; 
+      setFanSpeed();   // Turn off fan
+      lcd.clear();
+      updateDisplay(); // and update display
+      return;          // Return and skip any other button logic
+    }
+  }
+  
   if (startStopButton.fell() ||            // Called when start/stop button pressed,
       (artisanPid != artisanPidPrev)) {    // or Artisan PID On or Off command received in Manual or PID TUNE mode
     if (artisanPid != artisanPidPrev) { // Received a command from Artisan
@@ -336,13 +352,22 @@ void loop() {
       }
     }
     else {  // End the roast
+      heat = 0;  // Turn heat off, but leave fan running
       envController.reset();
       beanController.reset();
       if (sdPresent) logfile.close();
+      
+      if (mode == AUTO) { // Reset auto roast to initial settings
+        endAutoRoast = true;  
+        currentSeg = 1;  
+        currentSetTemp = (double)segTemp[0];
+        currentSegTime = segTime[0];   
+        lcd.clear();
+        updateDisplay();
+      }
     }
   }  // end if (startStopButton.fell())
 
-  modeButton.update();
   if (modeButton.fell()) {  // Switch Modes
     if (!roast) { // Only switch modes if not roasting
       saveSettings(); // Save settings to EEPROM when switching modes
@@ -374,12 +399,11 @@ void loop() {
         default:
           break;
       }
+      lcd.clear();
+      updateDisplay();
     }
-    lcd.clear();
-    updateDisplay();
   } // end if (modeButton.fell())
 
-  selButton.update();
   if (selButton.fell()) {  // Make new selection (MANUAL and SETTINGS modes)
     switch (mode) {
       case MANUAL:
@@ -408,7 +432,6 @@ void loop() {
     updateDisplay();
   } // end if (selButton.fell())
 
-  incButton.update();
   if (incButton.fell()) { // Increment button was pushed.  Increment selection
       if (editVal == CVAR) {
         if (mode == SETTINGS) controlVarAuto = (controlVarAuto == ENV ? BEAN : ENV);
@@ -447,7 +470,6 @@ void loop() {
     }
   }
   
-  decButton.update();
   if (decButton.fell()) { // Decrement button was pushed.  Decrement selection
       if (editVal == CVAR) {
         if (mode == SETTINGS) controlVarAuto = (controlVarAuto == ENV ? BEAN : ENV);
@@ -541,19 +563,22 @@ void loop() {
           currentSeg++;
 
           // End the roast if we are at the end of the 9th segment, or the next segment length is 0
-          bool endRoast = false;
-          if (currentSeg > 9) endRoast = true;
-          else if (segTime[currentSeg-1] == 0) endRoast = true;
+          if (currentSeg > 9) endAutoRoast = true;
+          else if (segTime[currentSeg-1] == 0) endAutoRoast = true;
           
-          if (endRoast == true) { // End the roast
+          if (endAutoRoast == true) { // End the roast
             roast = false;
+            heat = 0;    // Turn heater off
             fan = fan0;  // Turn fan speed to the final segment fan speed value
             setFanSpeed();
-            currentSeg = 1;
-            heat = 0;
+            currentSeg = 1;  // Reset auto roast to initial settings
+            currentSetTemp = (double)segTemp[0];
+            currentSegTime = segTime[0];   
             envController.reset();
             beanController.reset();
             if (sdPresent) logfile.close();
+            lcd.clear();
+            updateDisplay();
             return;
           }
           currentSegTime = segTime[currentSeg-1];
@@ -581,8 +606,7 @@ void loop() {
     firstMeas = false;
   }
 
-  heaterDutyCycleOff();
-  
+  heaterDutyCycleOff(); 
 }
 
 /*
@@ -703,16 +727,20 @@ void updateDisplay() {
     
    if (mode == AUTO) { // Unique display for AUTO
       lcd.setCursor(0,0);
-      lcd.print("AUTO ROAST");      
+      if (endAutoRoast) lcd.print("AUTO ROAST COMPLETE");
+      else lcd.print("AUTO ROAST");      
    }
 
    if (mode == AUTO || mode == SETTINGS) { // Common for both AUTO and SETTINGS
       lcd.setCursor(1,1);
-      lcd.print(currentSeg);
-      lcd.print("/9");
-      lcd.setCursor(5,1);
-      formattedTime(timeStr,currentSegTime); 
-      lcd.print(timeStr);    
+      if (endAutoRoast) lcd.print(" Press any button");
+      else {
+        lcd.print(currentSeg);
+        lcd.print("/9");
+        lcd.setCursor(5,1);
+        formattedTime(timeStr,currentSegTime); 
+        lcd.print(timeStr);
+      } 
    }
    
    if (mode == MANUAL) {
@@ -761,10 +789,12 @@ void updateDisplay() {
    }
 
    if ((mode == MANUAL) || (mode == AUTO) || (mode == SETTINGS)) {
-      lcd.setCursor(12,1); 
-      lcd.print("ST");
-      lcd.setCursor(15,1);
-      printTemp(currentSetTemp,0);
+      if (!endAutoRoast) {
+        lcd.setCursor(12,1); 
+        lcd.print("ST");
+        lcd.setCursor(15,1);
+        printTemp(currentSetTemp,0);
+      }
       
       lcd.setCursor(11,2);
       if (((mode == MANUAL) && (controlVarMan == ENV)) || ((mode != MANUAL) && (controlVarAuto == ENV))) lcd.print("*");
@@ -775,10 +805,12 @@ void updateDisplay() {
    }     
 
    if (mode != SETTINGS) {
-      lcd.setCursor(15,0);
-      formattedTime(timeStr,(int)elapsedTime); 
-      lcd.print(timeStr); 
-   
+      if (!endAutoRoast) {
+        lcd.setCursor(15,0);
+        formattedTime(timeStr,(int)elapsedTime); 
+        lcd.print(timeStr); 
+      }
+      
       lcd.setCursor(0,2);
       lcd.print("HEAT");
       lcd.setCursor(5,2);
