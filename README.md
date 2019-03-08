@@ -61,13 +61,15 @@ I have also included a few 3D printed parts I used, which may be useful.  This r
 The plans for a 1/4" ply laser cut case are also included if you have access to a laser cutter.  Or build your own!  
 
 # Artisan Roaster Scope Instructions
-Artisan is not required for this roaster, as the Teensy firmware can already track a stored profile and save the roast data to an SD card without an external interface.  I still highly recommend Artisan as it includes additional visual analysis tools.  
+Artisan is not required for this roaster, as the Teensy firmware can already track a stored profile and save the roast data to an SD card without an external interface.  I still highly recommend Artisan as it includes additional visual analysis tools. 
+
+**Important Note:** The USB port 5V power *must* be disconnected before attempting to interface with Artisan. There are several ways to do this, described at https://www.pjrc.com/teensy/external_power.html.  The simplest way is to disconnect the 5V pads apart on the bottom of the Teensy board.  I chose a different method in my roaster.  My roaster has a USB panel mount on the outside of the case, with an internal USB cable going from the panel mount to the Teensy.  Since this cable is permanently isntalled inside my case, I chose to clip the red wire inside the cable, sealing off the cut wire with shrink tube to prevent a short.  This avoids the need to modify the Teensy itself.
 
 Coffee Roaster uses the same Artisan communication protocol as a TC4.  To use this Teensy code with Artisan, set up the device as a TC4 in Config>Device on the ET/BT tab.  Check the "Control" and "PID Firmware" checkboxes.  On the Extra Devices tab, set up the ArduinoTC4_34, ArduinoTC4_56 (Label 1 = Heater, Label 2 = Fan), and ArduinoTC4_78 (Label 1 = SV, Label 2 = Ambient).  Check the LCD 1, LCD 2, Curve 1, and Curve 2 checkboxes for ArduinoTC4_56 and _78, but uncheck for _34.  The YouTube video [Artisan Roaster Scope - Setup for TC4](https://youtu.be/0-Co-pXF2NM) walks through the setup procedure.
 
 The above steps are sufficient for logging your roast with Artisan.  To control the roast using Artisan, check out the YouTube video [Artisan Roaster Scope - TC4 PID Control](https://youtu.be/ykuUCXhGAC4).  This video has four parts.  The two parts labeled "Background Follow TC4 PID" and "Ramp/Soak Profile TC4 PID" can be used with this code.  The "Artisan PID" variants are not currently supported.  
 
-If using Artisan to control your roaster, you will also need to set up the DC Fan control  To do this, open the Config>Events dialog, change the first Event name to Fan, go to the Sliders tab, and set the Fan Action to Serial Command, and add the command "DCFAN;{}" to the selection box, without the quotes.  
+If using Artisan to control your roaster, you will also need to set up the DC Fan control. To do this, open the Config>Events dialog, change the first Event name to Fan, go to the Sliders tab, and set the Fan Action to Serial Command, and add the command "DCFAN;{}" to the selection box, without the quotes.  
 
 <img src="/images/IMG_2028.JPG" alt="Roaster"> 
 
