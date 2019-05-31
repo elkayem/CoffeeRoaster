@@ -301,8 +301,11 @@ void loop() {
   incButton.update();
   decButton.update();
 
-  if (endAutoRoast) {  // Auto roast has ended.  We are waiting for any button to be pushed to reset auto roast.
-    if (startStopButton.fell() || modeButton.fell() || selButton.fell() || incButton.fell() || decButton.fell()) { // Button was pushed
+  if (endAutoRoast) {  // Auto roast has ended.  We are waiting for the START/STOP button
+                       // to be pushed to reset auto roast.  During this transition period,
+                       // the fan speed can still be adjusted up and down, but all other 
+                       // buttons are disabled
+    if (startStopButton.fell()) { // START/STOP button was pushed
       endAutoRoast = false;
       fan = 0; 
       setFanSpeed();   // Turn off fan
@@ -310,7 +313,7 @@ void loop() {
       updateDisplay(); // and update display
       return;          // Return and skip any other button logic
     }
-  }
+  } // end if(endAutoRoast)
   
   if (startStopButton.fell() ||            // Called when start/stop button pressed,
       (artisanPid != artisanPidPrev)) {    // or Artisan PID On or Off command received in Manual or PID TUNE mode
@@ -369,7 +372,7 @@ void loop() {
   }  // end if (startStopButton.fell())
 
   if (modeButton.fell()) {  // Switch Modes
-    if (!roast) { // Only switch modes if not roasting
+    if (!roast && !endAutoRoast) { // Only switch modes if not roasting and not in the endAutoRoast transition
       saveSettings(); // Save settings to EEPROM when switching modes
       switch (mode) {
         case AUTO:
@@ -566,7 +569,7 @@ void loop() {
           if (currentSeg > 9) endAutoRoast = true;
           else if (segTime[currentSeg-1] == 0) endAutoRoast = true;
           
-          if (endAutoRoast == true) { // End the roast
+          if (endAutoRoast == true) { // End the roast, and display endAutoRoast transition screen
             roast = false;
             heat = 0;    // Turn heater off
             fan = fan0;  // Turn fan speed to the final segment fan speed value
@@ -733,7 +736,7 @@ void updateDisplay() {
 
    if (mode == AUTO || mode == SETTINGS) { // Common for both AUTO and SETTINGS
       lcd.setCursor(1,1);
-      if (endAutoRoast) lcd.print(" Press any button");
+      if (endAutoRoast) lcd.print(" Press START/STOP");
       else {
         lcd.print(currentSeg);
         lcd.print("/9");
